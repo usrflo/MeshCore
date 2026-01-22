@@ -55,6 +55,8 @@
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
 
+#define RELIABLE_NEIGHBOUR_SNR       0
+
 void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
 #if MAX_NEIGHBOURS // check if neighbours enabled
   // find existing neighbour, else use least recently updated
@@ -80,6 +82,32 @@ void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float sn
   neighbour->heard_timestamp = getRTCClock()->getCurrentTime();
   neighbour->snr = (int8_t)(snr * 4);
 #endif
+}
+
+bool MyMesh::neighboursOnPath(const mesh::Packet* packet) {
+#if MAX_NEIGHBOURS // check if neighbours enabled
+
+  // check if two reachable neighbours are on first and second position of the path
+  if (packet->path_len >= 2 * PATH_HASH_SIZE) {
+
+    int matches = 0;
+    for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+
+      if (memcmp(packet->path, neighbours[i].id.pub_key, PATH_HASH_SIZE) == 0
+        || memcmp(packet->path + PATH_HASH_SIZE, neighbours[i].id.pub_key, PATH_HASH_SIZE) == 0) {
+          // check if neighbour can be reached with a higher likelihood
+          if (neighbours[i].snr >= RELIABLE_NEIGHBOUR_SNR) {
+            matches++;
+          }
+      }
+
+      if (matches>=2) {
+        return true;
+      }
+    }
+  }
+#endif
+  return false;
 }
 
 uint8_t MyMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood) {
