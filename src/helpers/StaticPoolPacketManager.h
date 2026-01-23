@@ -19,13 +19,14 @@ public:
 };
 
 class StaticPoolPacketManager : public mesh::PacketManager {
-  PacketQueue unused, send_queue, rx_queue;
+  PacketQueue unused, send_queue, rx_queue, hold_queue;
 
 public:
   StaticPoolPacketManager(int pool_size);
 
   mesh::Packet* allocNew() override;
   void free(mesh::Packet* packet) override;
+  void hold(mesh::Packet *packet) override;
   void queueOutbound(mesh::Packet* packet, uint8_t priority, uint32_t scheduled_for) override;
   mesh::Packet* getNextOutbound(uint32_t now) override;
   int getOutboundCount(uint32_t now) const override;

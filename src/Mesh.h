@@ -71,10 +71,15 @@ protected:
   virtual uint8_t getExtraAckTransmitCount() const;
 
   /**
-   * \brief  Perform search of local DB of peers/contacts.
-   * \returns  Number of peers with matching hash
+   * \brief  Process a packet that is not directly addressed to this node.
    */
-  virtual int searchPeersByHash(const uint8_t* hash);
+  virtual bool processForeignPacket(const mesh::Packet* packet);
+
+      /**
+       * \brief  Perform search of local DB of peers/contacts.
+       * \returns  Number of peers with matching hash
+       */
+      virtual int searchPeersByHash(const uint8_t *hash);
 
   /**
    * \brief  lookup the ECDH shared-secret between this node and peer by idx (calculate if necessary)

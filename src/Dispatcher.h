@@ -86,6 +86,7 @@ class PacketManager {
 public:
   virtual Packet* allocNew() = 0;
   virtual void free(Packet* packet) = 0;
+  virtual void hold(Packet *packet) = 0;
 
   virtual void queueOutbound(Packet* packet, uint8_t priority, uint32_t scheduled_for) = 0;
   virtual Packet* getNextOutbound(uint32_t now) = 0;    // by priority

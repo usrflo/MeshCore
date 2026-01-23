@@ -25,6 +25,9 @@ uint32_t Mesh::getDirectRetransmitDelay(const Packet* packet) {
 uint8_t Mesh::getExtraAckTransmitCount() const {
   return 0;
 }
+bool Mesh::processForeignPacket(const mesh::Packet *packet) {
+  // by default, do nothing
+}
 
 uint32_t Mesh::getCADFailRetryDelay() const {
   return _rng->nextInt(1, 4)*120;
@@ -77,36 +80,57 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
     return ACTION_RELEASE;
   }
 
-  if (pkt->isRouteDirect() && pkt->path_len >= PATH_HASH_SIZE) {
-    // check for 'early received' ACK
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
-      int i = 0;
-      uint32_t ack_crc;
-      memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
-      if (i <= pkt->payload_len) {
-        onAckRecv(pkt, ack_crc);
-      }
-    }
+  if (pkt->isRouteDirect()) {
 
-    if (self_id.isHashMatch(pkt->path) && allowPacketForward(pkt)) {
-      if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
-        return forwardMultipartDirect(pkt);
-      } else if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
-        if (!_tables->hasSeen(pkt)) {  // don't retransmit!
-          removeSelfFromPath(pkt);
-          routeDirectRecvAcks(pkt, 0);
+    // TODO: if HOLD is filled
+      // if cmp _tables_hold shows the same checksum as the chksum of this packet
+        // if the path is shorter than the one of the matching packet
+          // then UNHOLD the seen packet (free it)
+          // remove the record from _tables_hold
+          // release the packet (it will be re-processed below): return ACTION_RELEASE
+
+    if (pkt->path_len >= PATH_HASH_SIZE) {
+      // check for 'early received' ACK
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+        int i = 0;
+        uint32_t ack_crc;
+        memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
+        if (i <= pkt->payload_len) {
+          onAckRecv(pkt, ack_crc);
         }
-        return ACTION_RELEASE;
       }
 
-      if (!_tables->hasSeen(pkt)) {
-        removeSelfFromPath(pkt);
+      if (allowPacketForward(pkt)) {
+        if (self_id.isHashMatch(pkt->path)) {
+          if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
+            return forwardMultipartDirect(pkt);
+          } else if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+          if (!_tables->hasSeen(pkt)) {  // don't retransmit!
+              removeSelfFromPath(pkt);
+              routeDirectRecvAcks(pkt, 0);
+            }
+            return ACTION_RELEASE;
+          }
 
-        uint32_t d = getDirectRetransmitDelay(pkt);
-        return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
+          if (!_tables->hasSeen(pkt)) {
+            removeSelfFromPath(pkt);
+
+            uint32_t d = getDirectRetransmitDelay(pkt);
+            return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
+          }
+        } else if (processForeignPacket(pkt)) {
+          if (!_tables->hasSeen(pkt)) { // don't retransmit!
+            // removes the first hop (not 'self') from the path so the next hop will be addressed
+            removeSelfFromPath(pkt);
+            // TODO: return transmit delay
+            // TODO: assure that the dispatcher re-transmits the packages in the hold_queue when it's time
+            return ACTION_MANUAL_HOLD;
+          }
+        }
       }
+
+      return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
     }
-    return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
   }
 
   if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
