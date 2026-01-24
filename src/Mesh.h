@@ -220,6 +220,14 @@ public:
   */
   void sendZeroHop(Packet* packet, uint16_t* transport_codes, uint32_t delay_millis=0);
 
+  /**
+   * \brief  re-send the given packet (for retransmission) if conditions apply.
+   * \return true, if packet was re-sent.
+   */
+  bool resendPacket(mesh::Packet *packet) override;
+
+  #define MAX_RESEND_ATTEMPTS (3)
+
 };
 
 }

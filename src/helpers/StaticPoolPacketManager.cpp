@@ -66,6 +66,12 @@ void PacketQueue::add(mesh::Packet* packet, uint8_t priority, uint32_t scheduled
   _num++;
 }
 
+void PacketQueue::update(int i, uint8_t priority, uint32_t scheduled_for) {
+  if (i >= _num) return;  // invalid index
+  _pri_table[i] = priority;
+  _schedule_table[i] = scheduled_for;
+}
+
 StaticPoolPacketManager::StaticPoolPacketManager(int pool_size): unused(pool_size), send_queue(pool_size), rx_queue(pool_size) {
   // load up our unusued Packet pool
   for (int i = 0; i < pool_size; i++) {
@@ -85,29 +91,43 @@ void StaticPoolPacketManager::queueOutbound(mesh::Packet* packet, uint8_t priori
   send_queue.add(packet, priority, scheduled_for);
 }
 
-mesh::Packet* StaticPoolPacketManager::getNextOutbound(uint32_t now) {
-  //send_queue.sort();   // sort by scheduled_for/priority first
+void StaticPoolPacketManager::outboundReschedule(mesh::Packet *packet, uint8_t priority, uint32_t scheduled_for) {
+  // find and remove from send_queue
+  for (int i = 0; i < send_queue.count(); i++) {
+    if (send_queue.itemAt(i) == packet) {
+      send_queue.update(i, priority, scheduled_for);
+      break;
+    }
+  }
+}
+
+mesh::Packet *StaticPoolPacketManager::getNextOutbound(uint32_t now) {
+  // send_queue.sort();   // sort by scheduled_for/priority first
   return send_queue.get(now);
 }
 
-int  StaticPoolPacketManager::getOutboundCount(uint32_t now) const {
+int StaticPoolPacketManager::getOutboundCount(uint32_t now) const {
   return send_queue.countBefore(now);
+}
+
+int StaticPoolPacketManager::getOutboundCount() const {
+  return send_queue.count();
 }
 
 int StaticPoolPacketManager::getFreeCount() const {
   return unused.count();
 }
 
-mesh::Packet* StaticPoolPacketManager::getOutboundByIdx(int i) {
+mesh::Packet *StaticPoolPacketManager::getOutboundByIdx(int i) {
   return send_queue.itemAt(i);
 }
-mesh::Packet* StaticPoolPacketManager::removeOutboundByIdx(int i) {
+mesh::Packet *StaticPoolPacketManager::removeOutboundByIdx(int i) {
   return send_queue.removeByIdx(i);
 }
 
-void StaticPoolPacketManager::queueInbound(mesh::Packet* packet, uint32_t scheduled_for) {
+void StaticPoolPacketManager::queueInbound(mesh::Packet * packet, uint32_t scheduled_for) {
   rx_queue.add(packet, 0, scheduled_for);
 }
-mesh::Packet* StaticPoolPacketManager::getNextInbound(uint32_t now) {
+mesh::Packet *StaticPoolPacketManager::getNextInbound(uint32_t now) {
   return rx_queue.get(now);
 }

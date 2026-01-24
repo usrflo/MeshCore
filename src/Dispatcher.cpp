@@ -74,7 +74,10 @@ void Dispatcher::loop() {
       } else {
         n_sent_direct++;
       }
-      releasePacket(outbound);  // return to pool
+      // allow for possible retransmission for reliability
+      if (!resendPacket(outbound)) {
+        releasePacket(outbound); // return to pool
+      }
       outbound = NULL;
     } else if (millisHasNowPassed(outbound_expiry)) {
       MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
@@ -174,10 +177,9 @@ void Dispatcher::checkRecv() {
             pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
             (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
-    static uint8_t packet_hash[MAX_HASH_SIZE];
-    pkt->calculatePacketHash(packet_hash);
+    pkt->calculatePacketHash();
     Serial.print(" hash=");
-    mesh::Utils::printHex(Serial, packet_hash, MAX_HASH_SIZE);
+    mesh::Utils::printHex(Serial, pkt->hash, MAX_HASH_SIZE);
 
     if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ
         || pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
@@ -283,7 +285,7 @@ void Dispatcher::checkSend() {
 
     #if MESH_PACKET_LOGGING
       Serial.print(getLogDateTime());
-      Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d)", 
+      Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d, attempt=%d)", 
             len, outbound->getPayloadType(), outbound->isRouteDirect() ? "D" : "F", outbound->payload_len);
       if (outbound->getPayloadType() == PAYLOAD_TYPE_PATH || outbound->getPayloadType() == PAYLOAD_TYPE_REQ
         || outbound->getPayloadType() == PAYLOAD_TYPE_RESPONSE || outbound->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
