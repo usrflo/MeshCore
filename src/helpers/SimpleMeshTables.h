@@ -60,8 +60,7 @@ public:
       return false;
     }
 
-    uint8_t hash[MAX_HASH_SIZE];
-    packet->calculatePacketHash(hash);
+    const uint8_t* hash = packet->calculatePacketHash();
 
     const uint8_t* sp = _hashes;
     for (int i = 0; i < MAX_PACKET_HASHES; i++, sp += MAX_HASH_SIZE) {
@@ -91,8 +90,7 @@ public:
         }
       }
     } else {
-      uint8_t hash[MAX_HASH_SIZE];
-      packet->calculatePacketHash(hash);
+      const uint8_t* hash = packet->calculatePacketHash();
 
       uint8_t* sp = _hashes;
       for (int i = 0; i < MAX_PACKET_HASHES; i++, sp += MAX_HASH_SIZE) {

@@ -44,69 +44,91 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
     return ACTION_RELEASE;
   }
 
-  if (pkt->isRouteDirect() && pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
-    if (pkt->path_len < MAX_PATH_SIZE) {
-      uint8_t i = 0;
-      uint32_t trace_tag;
-      memcpy(&trace_tag, &pkt->payload[i], 4); i += 4;
-      uint32_t auth_code;
-      memcpy(&auth_code, &pkt->payload[i], 4); i += 4;
-      uint8_t flags = pkt->payload[i++];
-      uint8_t path_sz = flags & 0x03;  // NEW v1.11+: lower 2 bits is path hash size
+  if (pkt->isRouteDirect()) {
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+      if (pkt->path_len < MAX_PATH_SIZE) {
+        uint8_t i = 0;
+        uint32_t trace_tag;
+        memcpy(&trace_tag, &pkt->payload[i], 4); i += 4;
+        uint32_t auth_code;
+        memcpy(&auth_code, &pkt->payload[i], 4); i += 4;
+        uint8_t flags = pkt->payload[i++];
+        uint8_t path_sz = flags & 0x03;  // NEW v1.11+: lower 2 bits is path hash size
 
-      uint8_t len = pkt->payload_len - i;
-      uint8_t offset = pkt->path_len << path_sz;
-      if (offset >= len) {   // TRACE has reached end of given path
-        onTraceRecv(pkt, trace_tag, auth_code, flags, pkt->path, &pkt->payload[i], len);
-      } else if (self_id.isHashMatch(&pkt->payload[i + offset], 1 << path_sz) && allowPacketForward(pkt) && !_tables->hasSeen(pkt)) {
-        // append SNR (Not hash!)
-        pkt->path[pkt->path_len++] = (int8_t) (pkt->getSNR()*4);
+        uint8_t len = pkt->payload_len - i;
+        uint8_t offset = pkt->path_len << path_sz;
+        if (offset >= len) {   // TRACE has reached end of given path
+          onTraceRecv(pkt, trace_tag, auth_code, flags, pkt->path, &pkt->payload[i], len);
+        } else if (self_id.isHashMatch(&pkt->payload[i + offset], 1 << path_sz) && allowPacketForward(pkt) && !_tables->hasSeen(pkt)) {
+          // append SNR (Not hash!)
+          pkt->path[pkt->path_len++] = (int8_t) (pkt->getSNR()*4);
 
-        uint32_t d = getDirectRetransmitDelay(pkt);
-        return ACTION_RETRANSMIT_DELAYED(5, d);  // schedule with priority 5 (for now), maybe make configurable?
-      }
-    }
-    return ACTION_RELEASE;
-  }
-
-  if (pkt->isRouteDirect() && pkt->getPayloadType() == PAYLOAD_TYPE_CONTROL && (pkt->payload[0] & 0x80) != 0) {
-    if (pkt->path_len == 0) {
-      onControlDataRecv(pkt);
-    }
-    // just zero-hop control packets allowed (for this subset of payloads)
-    return ACTION_RELEASE;
-  }
-
-  if (pkt->isRouteDirect() && pkt->path_len >= PATH_HASH_SIZE) {
-    // check for 'early received' ACK
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
-      int i = 0;
-      uint32_t ack_crc;
-      memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
-      if (i <= pkt->payload_len) {
-        onAckRecv(pkt, ack_crc);
-      }
-    }
-
-    if (self_id.isHashMatch(pkt->path) && allowPacketForward(pkt)) {
-      if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
-        return forwardMultipartDirect(pkt);
-      } else if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
-        if (!_tables->hasSeen(pkt)) {  // don't retransmit!
-          removeSelfFromPath(pkt);
-          routeDirectRecvAcks(pkt, 0);
+          uint32_t d = getDirectRetransmitDelay(pkt);
+          return ACTION_RETRANSMIT_DELAYED(5, d);  // schedule with priority 5 (for now), maybe make configurable?
         }
-        return ACTION_RELEASE;
       }
+      return ACTION_RELEASE;
+    }
 
-      if (!_tables->hasSeen(pkt)) {
-        removeSelfFromPath(pkt);
+    if (pkt->getPayloadType() == PAYLOAD_TYPE_CONTROL && (pkt->payload[0] & 0x80) != 0) {
+      if (pkt->path_len == 0) {
+        onControlDataRecv(pkt);
+      }
+      // just zero-hop control packets allowed (for this subset of payloads)
+      return ACTION_RELEASE;
+    }
 
-        uint32_t d = getDirectRetransmitDelay(pkt);
-        return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
+    // check if this is a direct retransmit of a packet we recently sent;
+    // if yes, no retransmit as an error correction is required, so remove it from our outbound queue and do not process further.
+    if (_mgr->getOutboundCount() > 0) {
+      // assure the package hash is calculated
+      pkt->calculatePacketHash();
+      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): checking for direct retransmit match in %d queued outbound packets",
+                         getLogDateTime(), _mgr->getOutboundCount());
+      for (int i = 0; i < _mgr->getOutboundCount(); i++) {
+        Packet* send_pkt = _mgr->getOutboundByIdx(i);
+        if (send_pkt) {
+          // send_pkt->calculatePacketHash(); should already be calculated when sent
+          if (memcmp(pkt->hash, send_pkt->hash, MAX_HASH_SIZE) == 0) {
+            MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): direct retransmit match found!", getLogDateTime());
+            _mgr->free(send_pkt);  // remove the retransmit package from the outbound queue
+            return ACTION_RELEASE;  // don't process this direct package further: it confirmed our last send succeeded
+          }
+        }
       }
     }
-    return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
+
+    if (pkt->path_len >= PATH_HASH_SIZE) {
+      // check for 'early received' ACK
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+        int i = 0;
+        uint32_t ack_crc;
+        memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
+        if (i <= pkt->payload_len) {
+          onAckRecv(pkt, ack_crc);
+        }
+      }
+
+      if (self_id.isHashMatch(pkt->path) && allowPacketForward(pkt)) {
+        if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
+          return forwardMultipartDirect(pkt);
+        } else if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+          if (!_tables->hasSeen(pkt)) {  // don't retransmit!
+            removeSelfFromPath(pkt);
+            routeDirectRecvAcks(pkt, 0);
+          }
+          return ACTION_RELEASE;
+        }
+
+        if (!_tables->hasSeen(pkt)) {
+          removeSelfFromPath(pkt);
+
+          uint32_t d = getDirectRetransmitDelay(pkt);
+          return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
+        }
+      }
+      return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
+    }
   }
 
   if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
@@ -718,6 +740,22 @@ void Mesh::sendZeroHop(Packet* packet, uint16_t* transport_codes, uint32_t delay
   _tables->hasSeen(packet); // mark this packet as already sent in case it is rebroadcast back to us
 
   sendPacket(packet, 0, delay_millis);
+}
+
+bool Mesh::resendPacket(mesh::Packet *packet) {
+
+  // prepare error correction via potential retransmit:
+  // re-send only direct routed packets, with remaining path hops whose retransmits can be recognized;
+  // the final hop will ACK separately, so out-of-scope here
+  if (packet->isRouteDirect() && packet->path_len > 0 && packet->sending_attempts < MAX_RESEND_ATTEMPTS) {
+    packet->sending_attempts++;
+    // reschedule for possible retransmit with secondary priority;
+    // approximate delay as a double of the direct retransmit delay
+    _mgr->outboundReschedule(packet, 1, futureMillis(getDirectRetransmitDelay(packet) * 2));
+    return true;
+  }
+
+  return false;
 }
 
 }
