@@ -1,16 +1,16 @@
 #include "Dispatcher.h"
 
 #if MESH_PACKET_LOGGING
-  #include <Arduino.h>
+#include <Arduino.h>
 #endif
 
 #ifdef MESHCORE_SIMULATOR
-  #include "sim_context.h"
+#include "sim_context.h"
 #endif
 
 #include <math.h>
 
-    namespace mesh {
+namespace mesh {
 
 #define MAX_RX_DELAY_MILLIS   32000  // 32 seconds
 
@@ -62,41 +62,17 @@ void Dispatcher::loop() {
     _err_flags |= ERR_EVENT_STARTRX_TIMEOUT;
   }
 
-  if (outbound) {  // waiting for outbound send to be completed
+  // Check if outbound send completed or timed out (but don't process resend yet)
+  bool outbound_completed = false;
+  bool outbound_timedout = false;
+  if (outbound) { // waiting for outbound send to be completed
     if (_radio->isSendComplete()) {
-      long t = _ms->getMillis() - outbound_start;
-      total_air_time += t;  // keep track of how much air time we are using
-      //Serial.print("  airtime="); Serial.println(t);
-
-      // will need radio silence up to next_tx_time
-      next_tx_time = futureMillis(t * getAirtimeBudgetFactor());
-
-      _radio->onSendFinished();
-      logTx(outbound, 2 + outbound->path_len + outbound->payload_len);
-      if (outbound->isRouteFlood()) {
-        n_sent_flood++;
-      } else {
-        n_sent_direct++;
-      }
-      // allow for possible retransmission for reliability
-      if (!resendPacket(outbound)) {
-        releasePacket(outbound); // return to pool
-      }
-      outbound = NULL;
+      outbound_completed = true;
     } else if (millisHasNowPassed(outbound_expiry)) {
-      MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
-
-      _radio->onSendFinished();
-      logTxFail(outbound, 2 + outbound->path_len + outbound->payload_len);
-
-      releasePacket(outbound);  // return to pool
-      outbound = NULL;
+      outbound_timedout = true;
     } else {
-      return;  // can't do any more radio activity until send is complete or timed out
+      return; // can't do any more radio activity until send is complete or timed out
     }
-
-    // going back into receive mode now...
-    next_agc_reset_time = futureMillis(getAGCResetInterval());
   }
 
   if (getAGCResetInterval() > 0 && millisHasNowPassed(next_agc_reset_time)) {
@@ -104,14 +80,58 @@ void Dispatcher::loop() {
     next_agc_reset_time = futureMillis(getAGCResetInterval());
   }
 
-  // check inbound (delayed) queue
+  // Process inbound (delayed) queue and new received packets BEFORE handling resend
+  // This ensures duplicate detection can prevent unnecessary resends
   {
-    Packet* pkt = _mgr->getNextInbound(_ms->getMillis());
+    Packet *pkt = _mgr->getNextInbound(_ms->getMillis());
     if (pkt) {
       processRecvPacket(pkt);
     }
   }
   checkRecv();
+
+  // Now handle the completed/timed out outbound send AFTER processing received packets
+  // IMPORTANT: Check if outbound still exists - it might have been freed by duplicate detection
+  if (outbound_completed && outbound) {
+    long t = _ms->getMillis() - outbound_start;
+      total_air_time += t;  // keep track of how much air time we are using
+      //Serial.print("  airtime="); Serial.println(t);
+
+      // will need radio silence up to next_tx_time
+    next_tx_time = futureMillis(t * getAirtimeBudgetFactor());
+
+    _radio->onSendFinished();
+    logTx(outbound, 2 + outbound->path_len + outbound->payload_len);
+    if (outbound->isRouteFlood()) {
+      n_sent_flood++;
+    } else {
+      n_sent_direct++;
+    }
+    // allow for possible retransmission for reliability
+    if (!resendPacket(outbound)) {
+      releasePacket(outbound); // return to pool
+    }
+    outbound = NULL;
+
+    // going back into receive mode now...
+    next_agc_reset_time = futureMillis(getAGCResetInterval());
+  } else if (outbound_timedout && outbound) {
+    MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
+
+    _radio->onSendFinished();
+    logTxFail(outbound, 2 + outbound->path_len + outbound->payload_len);
+
+      releasePacket(outbound);  // return to pool
+    outbound = NULL;
+
+    // going back into receive mode now...
+    next_agc_reset_time = futureMillis(getAGCResetInterval());
+  } else if (outbound_completed || outbound_timedout) {
+    // outbound was already freed by duplicate detection, just clean up radio state
+    _radio->onSendFinished();
+    next_agc_reset_time = futureMillis(getAGCResetInterval());
+  }
+
   checkSend();
 }
 
@@ -159,7 +179,7 @@ void Dispatcher::checkRecv() {
           if (pkt->payload_len > sizeof(pkt->payload)) {
             MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d", getLogDateTime(), (uint32_t)pkt->payload_len);
             _mgr->free(pkt);  // put back into pool
-            pkt = NULL;  
+            pkt = NULL;
           } else {
             memcpy(pkt->payload, &raw[i], pkt->payload_len);
 
@@ -175,9 +195,9 @@ void Dispatcher::checkRecv() {
     }
   }
   if (pkt) {
-    #if MESH_PACKET_LOGGING
+#if MESH_PACKET_LOGGING
     Serial.print(getLogDateTime());
-    Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d", 
+    Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d",
             pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
             (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
@@ -191,7 +211,7 @@ void Dispatcher::checkRecv() {
     } else {
       Serial.printf("\n");
     }
-    #endif
+#endif
     logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
 
     if (pkt->isRouteFlood()) {
@@ -280,14 +300,14 @@ void Dispatcher::checkSend() {
         MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): ERROR: send start failed!", getLogDateTime());
 
         logTxFail(outbound, outbound->getRawLength());
-  
+
         releasePacket(outbound);  // return to pool
         outbound = NULL;
         return;
       }
       outbound_expiry = futureMillis(max_airtime);
 
-    #if MESH_PACKET_LOGGING
+#if MESH_PACKET_LOGGING
       Serial.print(getLogDateTime());
       Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d, attempt=%d)", 
             len, outbound->getPayloadType(), outbound->isRouteDirect() ? "D" : "F", outbound->payload_len);
@@ -297,7 +317,7 @@ void Dispatcher::checkSend() {
       } else {
         Serial.printf("\n");
       }
-    #endif
+#endif
     }
   }
 }
@@ -322,6 +342,8 @@ void Dispatcher::sendPacket(Packet* packet, uint8_t priority, uint32_t delay_mil
     MESH_DEBUG_PRINTLN("%s Dispatcher::sendPacket(): ERROR: invalid packet... path_len=%d, payload_len=%d", getLogDateTime(), (uint32_t) packet->path_len, (uint32_t) packet->payload_len);
     _mgr->free(packet);
   } else {
+    // Calculate hash before queuing so duplicate detection can match it later
+    packet->calculatePacketHash();
     _mgr->queueOutbound(packet, priority, futureMillis(delay_millis));
   }
 }

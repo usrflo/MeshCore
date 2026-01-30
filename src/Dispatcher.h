@@ -114,8 +114,7 @@ typedef uint32_t  DispatcherAction;
  * \brief  The low-level task that manages detecting incoming Packets, and the queueing
  *      and scheduling of outbound Packets.
 */
-class Dispatcher {
-  Packet* outbound;  // current outbound packet
+class Dispatcher {  
   unsigned long outbound_expiry, outbound_start, total_air_time, rx_air_time;
   unsigned long next_tx_time;
   unsigned long cad_busy_start;
@@ -132,6 +131,7 @@ protected:
   Radio* _radio;
   MillisecondClock* _ms;
   uint16_t _err_flags;
+  Packet *outbound; // current outbound packet
 
   Dispatcher(Radio& radio, MillisecondClock& ms, PacketManager& mgr)
     : _radio(&radio), _ms(&ms), _mgr(&mgr)
