@@ -1,16 +1,16 @@
 #include "Dispatcher.h"
 
 #if MESH_PACKET_LOGGING
-  #include <Arduino.h>
+#include <Arduino.h>
 #endif
 
 #ifdef MESHCORE_SIMULATOR
-  #include "sim_context.h"
+#include "sim_context.h"
 #endif
 
 #include <math.h>
 
-    namespace mesh {
+namespace mesh {
 
 #define MAX_RX_DELAY_MILLIS   32000  // 32 seconds
 
@@ -44,10 +44,6 @@ uint32_t Dispatcher::getCADFailMaxDuration() const {
 }
 
 void Dispatcher::loop() {
-  if (millisHasNowPassed(next_floor_calib_time)) {
-    _radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
-    next_floor_calib_time = futureMillis(NOISE_FLOOR_CALIB_INTERVAL);
-  }
   _radio->loop();
 
   // check for radio 'stuck' in mode other than Rx
@@ -97,9 +93,9 @@ void Dispatcher::loop() {
   }
 
   if (getAGCResetInterval() > 0 && millisHasNowPassed(next_agc_reset_time)) {
-    _radio->resetAGC();
-    next_agc_reset_time = futureMillis(getAGCResetInterval());
-  }
+      _radio->resetAGC();
+      next_agc_reset_time = futureMillis(getAGCResetInterval());
+    }
 
   // check inbound (delayed) queue
   {
@@ -110,6 +106,14 @@ void Dispatcher::loop() {
   }
   checkRecv();
   checkSend();
+
+  // Do noise floor calibration LAST, when no critical operations are pending
+  if (millisHasNowPassed(next_floor_calib_time)) {
+    if (!_radio->isReceiving() && _mgr->getOutboundCount(_ms->getMillis()) == 0) {
+      _radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
+      next_floor_calib_time = futureMillis(NOISE_FLOOR_CALIB_INTERVAL);
+    }
+  }
 }
 
 void Dispatcher::checkRecv() {
@@ -156,7 +160,7 @@ void Dispatcher::checkRecv() {
           if (pkt->payload_len > sizeof(pkt->payload)) {
             MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d", getLogDateTime(), (uint32_t)pkt->payload_len);
             _mgr->free(pkt);  // put back into pool
-            pkt = NULL;  
+            pkt = NULL;
           } else {
             memcpy(pkt->payload, &raw[i], pkt->payload_len);
 
@@ -172,9 +176,9 @@ void Dispatcher::checkRecv() {
     }
   }
   if (pkt) {
-    #if MESH_PACKET_LOGGING
+#if MESH_PACKET_LOGGING
     Serial.print(getLogDateTime());
-    Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d", 
+    Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d",
             pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
             (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
@@ -189,7 +193,7 @@ void Dispatcher::checkRecv() {
     } else {
       Serial.printf("\n");
     }
-    #endif
+#endif
     logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
 
     if (pkt->isRouteFlood()) {
@@ -278,14 +282,14 @@ void Dispatcher::checkSend() {
         MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): ERROR: send start failed!", getLogDateTime());
 
         logTxFail(outbound, outbound->getRawLength());
-  
+
         releasePacket(outbound);  // return to pool
         outbound = NULL;
         return;
       }
       outbound_expiry = futureMillis(max_airtime);
 
-    #if MESH_PACKET_LOGGING
+#if MESH_PACKET_LOGGING
       Serial.print(getLogDateTime());
       Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d)", 
             len, outbound->getPayloadType(), outbound->isRouteDirect() ? "D" : "F", outbound->payload_len);
@@ -295,7 +299,7 @@ void Dispatcher::checkSend() {
       } else {
         Serial.printf("\n");
       }
-    #endif
+#endif
     }
   }
 }
@@ -332,12 +336,12 @@ bool Dispatcher::millisHasNowPassed(unsigned long timestamp) const {
 
 unsigned long Dispatcher::futureMillis(int millis_from_now) const {
   unsigned long wake_time = _ms->getMillis() + millis_from_now;
-  #ifdef MESHCORE_SIMULATOR // Register wake time with simulator for accurate scheduling
+#ifdef MESHCORE_SIMULATOR // Register wake time with simulator for accurate scheduling
   if (auto *ctx = SIM_CTX()) {
     ctx->wake_registry.registerWakeTime(wake_time);
   }
-  #endif
-  
+#endif
+
   return wake_time;
 }
 }
