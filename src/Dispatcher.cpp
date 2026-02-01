@@ -74,7 +74,10 @@ void Dispatcher::loop() {
       } else {
         n_sent_direct++;
       }
-      releasePacket(outbound);  // return to pool
+      // allow for possible retransmission for reliability
+      if (!resendPacket(outbound)) {
+        releasePacket(outbound); // return to pool
+      }
       outbound = NULL;
     } else if (millisHasNowPassed(outbound_expiry)) {
       MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
@@ -342,5 +345,23 @@ unsigned long Dispatcher::futureMillis(int millis_from_now) const {
 #endif
 
   return wake_time;
+}
+
+bool Dispatcher::resendPacket(mesh::Packet *packet) {
+
+  // prepare error correction via potential retransmit:
+  // re-send only direct routed packets, with remaining path hops whose retransmits can be recognized;
+  // the final hop will ACK separately, so out-of-scope here
+  if (packet->isRouteDirect() && packet->path_len > 0 && packet->sending_attempts < MAX_RESEND_ATTEMPTS) {
+    packet->sending_attempts++;
+    // Reschedule with delay allowing intermediate forwarding in multi-hop chains
+    // Apply moderate multiplier for retry spacing
+    uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
+    // uint32_t jitter = _rng->nextInt(50, 150);
+    _mgr->queueOutbound(packet, 1, futureMillis(retransmit_delay * 1.5 + /*TODO: jitter*/100));
+    return true;
+  }
+
+  return false;
 }
 }

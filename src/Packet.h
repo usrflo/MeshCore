@@ -50,6 +50,7 @@ public:
   uint8_t payload[MAX_PACKET_PAYLOAD];
   int8_t _snr;
   uint8_t hash[MAX_HASH_SIZE];
+  uint8_t sending_attempts;
 
   /**
    * \brief calculate the hash of payload + type

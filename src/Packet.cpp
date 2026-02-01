@@ -11,6 +11,7 @@ Packet::Packet() {
   path_len = 0;
   payload_len = 0;
   memcpy(hash, ZERO_HASH, MAX_HASH_SIZE);
+  sending_attempts = 0;
 }
 
 int Packet::getRawLength() const {

@@ -108,6 +108,8 @@ typedef uint32_t  DispatcherAction;
 #define ERR_EVENT_CAD_TIMEOUT       (1 << 1)
 #define ERR_EVENT_STARTRX_TIMEOUT   (1 << 2)
 
+#define MAX_RESEND_ATTEMPTS      (3)
+
 /**
  * \brief  The low-level task that manages detecting incoming Packets, and the queueing
  *      and scheduling of outbound Packets.
@@ -167,6 +169,21 @@ public:
   Packet* obtainNewPacket();
   void releasePacket(Packet* packet);
   void sendPacket(Packet* packet, uint8_t priority, uint32_t delay_millis=0);
+  /**
+   * \brief  re-send the given packet (for retransmission) if conditions apply.
+   * \return true, if packet was re-sent.
+   */
+  bool resendPacket(Packet *packet);
+
+  /**
+   * \returns  number of milliseconds delay to apply to retransmitting the given packet.
+   */
+  virtual uint32_t getRetransmitDelay(const Packet *packet) { return 0; };
+
+  /**
+   * \returns  number of milliseconds delay to apply to retransmitting the given packet, for DIRECT mode.
+   */
+  virtual uint32_t getDirectRetransmitDelay(const Packet *packet) { return 0; };
 
   unsigned long getTotalAirTime() const { return total_air_time; }  // in milliseconds
   unsigned long getReceiveAirTime() const {return rx_air_time; }
