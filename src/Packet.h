@@ -49,12 +49,13 @@ public:
   uint8_t path[MAX_PATH_SIZE];
   uint8_t payload[MAX_PACKET_PAYLOAD];
   int8_t _snr;
+  uint8_t hash[MAX_HASH_SIZE];
 
   /**
    * \brief calculate the hash of payload + type
-   * \param  dest_hash   destination to store the hash (must be MAX_HASH_SIZE bytes)
+   * \return  hash pointer
    */
-  void calculatePacketHash(uint8_t* dest_hash) const;
+  uint8_t *calculatePacketHash() const;
 
   /**
    * \returns  one of ROUTE_ values

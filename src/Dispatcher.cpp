@@ -182,10 +182,9 @@ void Dispatcher::checkRecv() {
             pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
             (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
-    static uint8_t packet_hash[MAX_HASH_SIZE];
-    pkt->calculatePacketHash(packet_hash);
+    pkt->calculatePacketHash();
     Serial.print(" hash=");
-    mesh::Utils::printHex(Serial, packet_hash, MAX_HASH_SIZE);
+    mesh::Utils::printHex(Serial, pkt->hash, MAX_HASH_SIZE);
 
     if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ
         || pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
