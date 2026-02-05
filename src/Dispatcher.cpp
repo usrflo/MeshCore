@@ -120,26 +120,33 @@ void Dispatcher::loop() {
 }
 
 void Dispatcher::checkRecv() {
-  Packet* pkt;
-  float score;
-  uint32_t air_time;
-  {
-    uint8_t raw[MAX_TRANS_UNIT+1];
+  while (true) {
+    Packet *pkt = nullptr;
+    float score = 0.0f;
+    uint32_t air_time = 0;
+
+    uint8_t raw[MAX_TRANS_UNIT + 1];
     int len = _radio->recvRaw(raw, MAX_TRANS_UNIT);
-    if (len > 0) {
+    if (len <= 0) {
+      break;
+    }
+
       logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
 
       pkt = _mgr->allocNew();
       if (pkt == NULL) {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
-      } else {
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!",
+                         getLogDateTime());
+      continue;
+    }
+
         int i = 0;
 #ifdef NODE_ID
         uint8_t sender_id = raw[i++];
         if (sender_id == NODE_ID - 1 || sender_id == NODE_ID + 1) {  // simulate that NODE_ID can only hear NODE_ID-1 or NODE_ID+1, eg. 3 can't hear 1
         } else {
-          _mgr->free(pkt);  // put back into pool
-          return;
+      _mgr->free(pkt); // put back into pool
+      continue;
         }
 #endif
 
@@ -153,31 +160,30 @@ void Dispatcher::checkRecv() {
         pkt->path_len = raw[i++];
 
         if (pkt->path_len > MAX_PATH_SIZE || i + pkt->path_len > len) {
-          MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): partial or corrupt packet received, len=%d", getLogDateTime(), len);
-          _mgr->free(pkt);  // put back into pool
-          pkt = NULL;
-        } else {
-          memcpy(pkt->path, &raw[i], pkt->path_len); i += pkt->path_len;
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): partial or corrupt packet received, len=%d",
+                         getLogDateTime(), len);
+      _mgr->free(pkt); // put back into pool
+      continue;
+    }
+
+    memcpy(pkt->path, &raw[i], pkt->path_len);
+    i += pkt->path_len;
 
           pkt->payload_len = len - i;  // payload is remainder
           if (pkt->payload_len > sizeof(pkt->payload)) {
-            MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d", getLogDateTime(), (uint32_t)pkt->payload_len);
-            _mgr->free(pkt);  // put back into pool
-            pkt = NULL;
-          } else {
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d",
+                         getLogDateTime(), (uint32_t)pkt->payload_len);
+      _mgr->free(pkt); // put back into pool
+      continue;
+    }
+
             memcpy(pkt->payload, &raw[i], pkt->payload_len);
 
             pkt->_snr = _radio->getLastSNR() * 4.0f;
             score = _radio->packetScore(_radio->getLastSNR(), len);
             air_time = _radio->getEstAirtimeFor(len);
             rx_air_time += air_time;
-          }
-        }
-      }
-    } else {
-      pkt = NULL;
-    }
-  }
+
   if (pkt) {
 #if MESH_PACKET_LOGGING
     Serial.print(getLogDateTime());
@@ -215,6 +221,7 @@ void Dispatcher::checkRecv() {
     } else {
       n_recv_direct++;
       processRecvPacket(pkt);
+      }
     }
   }
 }

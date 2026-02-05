@@ -78,37 +78,42 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
   }
 
   if (pkt->isRouteDirect() && pkt->path_len >= PATH_HASH_SIZE) {
+    const bool is_next_hop = self_id.isHashMatch(pkt->path);
+
     // Check if this is a retransmit of a packet we recently sent;
     // if yes, the next hop successfully forwarded it, so remove our scheduled retransmit from outbound queue
-    
-    pkt->calculatePacketHash();
-    const uint8_t *recv_hash = pkt->hash;
 
-    // First check the current outbound packet being prepared/sent
-    if (outbound && outbound->sending_attempts > 0 && outbound->isRouteDirect()) {
-      const uint8_t *outbound_hash = outbound->calculatePacketHash();
-      if (memcmp(recv_hash, outbound_hash, MAX_HASH_SIZE) == 0) {
-        MESH_DEBUG_PRINTLN(
-            "%s Mesh::onRecvPacket(): downstream forwarded current outbound, canceling (attempt=%d)",
-            getLogDateTime(), outbound->sending_attempts);
-        releasePacket(outbound);
-        outbound = NULL;
-        return ACTION_RELEASE;
+    // Only do this when the packet is NOT addressed to us as next hop to avoid dropping fresh packets.
+    if (!is_next_hop) {
+      pkt->calculatePacketHash();
+      const uint8_t *recv_hash = pkt->hash;
+
+      // First check the current outbound packet being prepared/sent
+      if (outbound && outbound->sending_attempts > 0 && outbound->isRouteDirect()) {
+        const uint8_t *outbound_hash = outbound->calculatePacketHash();
+        if (memcmp(recv_hash, outbound_hash, MAX_HASH_SIZE) == 0) {
+          MESH_DEBUG_PRINTLN(
+              "%s Mesh::onRecvPacket(): downstream forwarded current outbound, canceling (attempt=%d)",
+              getLogDateTime(), outbound->sending_attempts);
+          releasePacket(outbound);
+          outbound = NULL;
+          return ACTION_RELEASE;
+        }
       }
-    }
 
-    if (_mgr->getOutboundCount(_ms->getMillis()) > 0) {
-      for (int i = _mgr->getOutboundCount(_ms->getMillis()) - 1; i >= 0; i--) {
-        Packet *queued_pkt = _mgr->getOutboundByIdx(i);
-        if (queued_pkt && queued_pkt->sending_attempts > 0 && queued_pkt->isRouteDirect()) {
-          const uint8_t *queued_hash = queued_pkt->calculatePacketHash();
-          if (memcmp(recv_hash, queued_hash, MAX_HASH_SIZE) == 0) {
-            MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): downstream forwarded packet detected, canceling "
-                               "retransmit (attempt=%d)",
-                               getLogDateTime(), queued_pkt->sending_attempts);
-            Packet *removed = _mgr->removeOutboundByIdx(i);
-            if (removed) _mgr->free(removed);
-            return ACTION_RELEASE; // don't process further: confirmed successful forwarding
+      if (_mgr->getOutboundCount(_ms->getMillis()) > 0) {
+        for (int i = _mgr->getOutboundCount(_ms->getMillis()) - 1; i >= 0; i--) {
+          Packet *queued_pkt = _mgr->getOutboundByIdx(i);
+          if (queued_pkt && queued_pkt->sending_attempts > 0 && queued_pkt->isRouteDirect()) {
+            const uint8_t *queued_hash = queued_pkt->calculatePacketHash();
+            if (memcmp(recv_hash, queued_hash, MAX_HASH_SIZE) == 0) {
+              MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): downstream forwarded packet detected, canceling "
+                                 "retransmit (attempt=%d)",
+                                 getLogDateTime(), queued_pkt->sending_attempts);
+              Packet *removed = _mgr->removeOutboundByIdx(i);
+              if (removed) _mgr->free(removed);
+              return ACTION_RELEASE; // don't process further: confirmed successful forwarding
+            }
           }
         }
       }
@@ -124,7 +129,7 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
       }
     }
 
-    if (self_id.isHashMatch(pkt->path) && allowPacketForward(pkt)) {
+    if (is_next_hop && allowPacketForward(pkt)) {
       if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
         return forwardMultipartDirect(pkt);
       } else if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
