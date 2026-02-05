@@ -115,7 +115,10 @@ typedef uint32_t  DispatcherAction;
  *      and scheduling of outbound Packets.
 */
 class Dispatcher {
+protected:
   Packet* outbound;  // current outbound packet
+
+private:
   unsigned long outbound_expiry, outbound_start, total_air_time, rx_air_time;
   unsigned long next_tx_time;
   unsigned long cad_busy_start;
