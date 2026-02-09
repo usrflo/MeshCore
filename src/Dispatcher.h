@@ -108,7 +108,7 @@ typedef uint32_t  DispatcherAction;
 #define ERR_EVENT_CAD_TIMEOUT       (1 << 1)
 #define ERR_EVENT_STARTRX_TIMEOUT   (1 << 2)
 
-#define MAX_RESEND_ATTEMPTS      (3)
+#define MAX_RESEND_ATTEMPTS      (2)
 
 /**
  * \brief  The low-level task that manages detecting incoming Packets, and the queueing
