@@ -495,7 +495,8 @@ get_platform_for_env() {
 
   # PlatformIO exposes project config as JSON; scan the selected env's
   # build_flags to recover the platform token used for artifact collection.
-  echo "$PIO_CONFIG_JSON" | python3 -c "
+  # Feed the cached JSON via stdin to avoid shell echo quirks and argv/env size limits.
+  python3 -c "
 import sys, json, re
 data = json.load(sys.stdin)
 for section, options in data:
@@ -507,7 +508,7 @@ for section, options in data:
                     if match:
                         print(match.group(1))
                         sys.exit(0)
-"
+" <<<"$PIO_CONFIG_JSON"
 }
 
 is_supported_platform() {
