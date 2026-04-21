@@ -8,6 +8,13 @@
 #define BRIDGE_MAX_BAUD 115200
 #endif
 
+// These bytes used to be reserved/unused in persisted prefs, so keep a marker before trusting them.
+#define DIRECT_RETRY_PREFS_MAGIC_0  0xD4
+#define DIRECT_RETRY_PREFS_MAGIC_1  0x52
+#define DIRECT_RETRY_RECENT_DEFAULT          0
+#define DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT  5
+#define DIRECT_RETRY_SNR_MARGIN_DB_MAX     40
+
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
   uint32_t n = 0;
@@ -60,7 +67,9 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     file.read((uint8_t *)&_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor));  // 84
     file.read((uint8_t *)&_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
     file.read((uint8_t *)&_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
-    file.read(pad, 4); // 108 : 4 bytes unused
+    file.read((uint8_t *)&_prefs->direct_retry_recent_enabled, sizeof(_prefs->direct_retry_recent_enabled)); // 108
+    file.read((uint8_t *)&_prefs->direct_retry_snr_margin_db, sizeof(_prefs->direct_retry_snr_margin_db));   // 109
+    file.read((uint8_t *)&_prefs->direct_retry_prefs_magic[0], sizeof(_prefs->direct_retry_prefs_magic));    // 110
     file.read((uint8_t *)&_prefs->sf, sizeof(_prefs->sf));                                         // 112
     file.read((uint8_t *)&_prefs->cr, sizeof(_prefs->cr));                                         // 113
     file.read((uint8_t *)&_prefs->allow_read_only, sizeof(_prefs->allow_read_only));               // 114
@@ -102,6 +111,15 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     _prefs->multi_acks = constrain(_prefs->multi_acks, 0, 1);
     _prefs->adc_multiplier = constrain(_prefs->adc_multiplier, 0.0f, 10.0f);
     _prefs->path_hash_mode = constrain(_prefs->path_hash_mode, 0, 2);   // NOTE: mode 3 reserved for future
+    // Old firmware left offset 108..111 undefined, so require the marker before using the new retry prefs.
+    if (_prefs->direct_retry_prefs_magic[0] != DIRECT_RETRY_PREFS_MAGIC_0
+        || _prefs->direct_retry_prefs_magic[1] != DIRECT_RETRY_PREFS_MAGIC_1) {
+      _prefs->direct_retry_recent_enabled = DIRECT_RETRY_RECENT_DEFAULT;
+      _prefs->direct_retry_snr_margin_db = DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT;
+    } else {
+      _prefs->direct_retry_recent_enabled = constrain(_prefs->direct_retry_recent_enabled, 0, 1);
+      _prefs->direct_retry_snr_margin_db = constrain(_prefs->direct_retry_snr_margin_db, 0, DIRECT_RETRY_SNR_MARGIN_DB_MAX);
+    }
 
     // sanitise bad bridge pref values
     _prefs->bridge_enabled = constrain(_prefs->bridge_enabled, 0, 1);
@@ -150,7 +168,11 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor));  // 84
     file.write((uint8_t *)&_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
     file.write((uint8_t *)&_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
-    file.write(pad, 4); // 108 : 4 byte unused
+    file.write((uint8_t *)&_prefs->direct_retry_recent_enabled, sizeof(_prefs->direct_retry_recent_enabled)); // 108
+    file.write((uint8_t *)&_prefs->direct_retry_snr_margin_db, sizeof(_prefs->direct_retry_snr_margin_db));   // 109
+    // Persist a marker so later loads can distinguish real values from legacy garbage in this reserved slot.
+    uint8_t retry_magic[2] = { DIRECT_RETRY_PREFS_MAGIC_0, DIRECT_RETRY_PREFS_MAGIC_1 };
+    file.write(retry_magic, sizeof(retry_magic)); // 110
     file.write((uint8_t *)&_prefs->sf, sizeof(_prefs->sf));                                         // 112
     file.write((uint8_t *)&_prefs->cr, sizeof(_prefs->cr));                                         // 113
     file.write((uint8_t *)&_prefs->allow_read_only, sizeof(_prefs->allow_read_only));               // 114
@@ -338,6 +360,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         sprintf(reply, "> %d", (uint32_t)_prefs->flood_max);
       } else if (memcmp(config, "direct.txdelay", 14) == 0) {
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->direct_tx_delay_factor));
+      } else if (memcmp(config, "direct.retry.heard", 18) == 0) {
+        sprintf(reply, "> %s", _prefs->direct_retry_recent_enabled ? "on" : "off");
+      } else if (memcmp(config, "direct.retry.margin", 19) == 0) {
+        sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_snr_margin_db);
       } else if (memcmp(config, "owner.info", 10) == 0) {
         *reply++ = '>';
         *reply++ = ' ';
@@ -586,6 +612,27 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
           strcpy(reply, "OK");
         } else {
           strcpy(reply, "Error, cannot be negative");
+        }
+      } else if (memcmp(config, "direct.retry.heard ", 19) == 0) {
+        if (memcmp(&config[19], "on", 2) == 0) {
+          _prefs->direct_retry_recent_enabled = 1;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else if (memcmp(&config[19], "off", 3) == 0) {
+          _prefs->direct_retry_recent_enabled = 0;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else {
+          strcpy(reply, "Error, must be on or off");
+        }
+      } else if (memcmp(config, "direct.retry.margin ", 20) == 0) {
+        int db = atoi(&config[20]);
+        if (db >= 0 && db <= DIRECT_RETRY_SNR_MARGIN_DB_MAX) {
+          _prefs->direct_retry_snr_margin_db = (uint8_t)db;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else {
+          sprintf(reply, "Error, min 0 and max %d", DIRECT_RETRY_SNR_MARGIN_DB_MAX);
         }
       } else if (memcmp(config, "owner.info ", 11) == 0) {
         config += 11;

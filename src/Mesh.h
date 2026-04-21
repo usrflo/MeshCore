@@ -4,6 +4,10 @@
 
 namespace mesh {
 
+#ifndef MAX_DIRECT_RETRY_SLOTS
+  #define MAX_DIRECT_RETRY_SLOTS  6
+#endif
+
 class GroupChannel {
 public:
   uint8_t hash[PATH_HASH_SIZE];
@@ -16,6 +20,7 @@ public:
 class MeshTables {
 public:
   virtual bool hasSeen(const Packet* packet) = 0;
+  virtual void markSent(const Packet* packet) = 0;
   virtual void clear(const Packet* packet) = 0;   // remove this packet hash from table
 };
 
@@ -24,17 +29,42 @@ public:
  *     and provides virtual methods for sub-classes on handling incoming, and also preparing outbound Packets.
 */
 class Mesh : public Dispatcher {
+  struct DirectRetryEntry {
+    Packet* packet;
+    Packet* trigger_packet;
+    unsigned long retry_at;
+    uint32_t retry_delay;
+    uint8_t retry_key[MAX_HASH_SIZE];
+    uint8_t priority;
+    uint8_t progress_marker;
+    bool expect_path_growth;
+    bool queued;
+    bool active;
+  };
+
   RTCClock* _rtc;
   RNG* _rng;
   MeshTables* _tables;
+  DirectRetryEntry _direct_retries[MAX_DIRECT_RETRY_SLOTS];
 
   void removeSelfFromPath(Packet* packet);
   void routeDirectRecvAcks(Packet* packet, uint32_t delay_millis);
+  void clearDirectRetrySlot(int idx);
+  bool isDirectRetryQueued(const Packet* packet) const;
+  void calculateDirectRetryKey(const Packet* packet, uint8_t* dest_key) const;
+  bool cancelDirectRetryOnEcho(const Packet* packet);
+  void armDirectRetryOnSendComplete(const Packet* packet);
+  void clearPendingDirectRetryOnSendFail(const Packet* packet);
+  bool getDirectRetryTarget(const Packet* packet, const uint8_t*& next_hop_hash, uint8_t& next_hop_hash_len,
+                            uint8_t& progress_marker, bool& expect_path_growth) const;
+  void maybeScheduleDirectRetry(const Packet* packet, uint8_t priority);
   //void routeRecvAcks(Packet* packet, uint32_t delay_millis);
   DispatcherAction forwardMultipartDirect(Packet* pkt);
 
 protected:
   DispatcherAction onRecvPacket(Packet* pkt) override;
+  void onSendComplete(Packet* packet) override;
+  void onSendFail(Packet* packet) override;
 
   virtual uint32_t getCADFailRetryDelay() const override;
 
@@ -64,6 +94,17 @@ protected:
    * \returns  number of milliseconds delay to apply to retransmitting the given packet, for DIRECT mode.
    */
   virtual uint32_t getDirectRetransmitDelay(const Packet* packet);
+
+  /**
+   * \brief  Decide whether a DIRECT packet should get one delayed retry if the next hop echo is not overheard.
+   *         Sub-classes can use neighbour tables or other link-quality data to opt in selectively.
+   */
+  virtual bool allowDirectRetry(const Packet* packet, const uint8_t* next_hop_hash, uint8_t next_hop_hash_len) const;
+
+  /**
+   * \returns  milliseconds to wait for the next-hop echo before queueing one retry of the DIRECT packet.
+   */
+  virtual uint32_t getDirectRetryEchoDelay(const Packet* packet) const;
 
   /**
    * \returns  number of extra (Direct) ACK transmissions wanted.

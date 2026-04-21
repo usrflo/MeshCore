@@ -40,6 +40,9 @@
 #ifndef TXT_ACK_DELAY
   #define TXT_ACK_DELAY 200
 #endif
+#ifndef HALO_DIRECT_RETRY_DELAY_MIN
+  #define HALO_DIRECT_RETRY_DELAY_MIN 200
+#endif
 
 #define FIRMWARE_VER_LEVEL       2
 
@@ -59,6 +62,20 @@
 #define CLI_REPLY_DELAY_MILLIS      600
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
+
+const NeighbourInfo* MyMesh::findNeighbourByHash(const uint8_t* hash, uint8_t hash_len) const {
+#if MAX_NEIGHBOURS
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    if (neighbours[i].heard_timestamp > 0 && neighbours[i].id.isHashMatch(hash, hash_len)) {
+      return &neighbours[i];
+    }
+  }
+#else
+  (void)hash;
+  (void)hash_len;
+#endif
+  return NULL;
+}
 
 void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
 #if MAX_NEIGHBOURS // check if neighbours enabled
@@ -399,6 +416,8 @@ File MyMesh::openAppend(const char *fname) {
 static uint8_t max_loop_minimal[] =  { 0, /* 1-byte */  4, /* 2-byte */  2, /* 3-byte */  1 };
 static uint8_t max_loop_moderate[] = { 0, /* 1-byte */  2, /* 2-byte */  1, /* 3-byte */  1 };
 static uint8_t max_loop_strict[] =   { 0, /* 1-byte */  1, /* 2-byte */  1, /* 3-byte */  1 };
+// SF5..SF12 receive floors, scaled by 4 so we can keep the retry gate in int8_t quarter-dB units.
+static const int8_t direct_retry_floor_x4[] = { -10, -20, -30, -40, -50, -60, -70, -80 };
 
 bool MyMesh::isLooped(const mesh::Packet* packet, const uint8_t max_counters[]) {
   uint8_t hash_size = packet->getPathHashSize();
@@ -530,6 +549,44 @@ uint32_t MyMesh::getRetransmitDelay(const mesh::Packet *packet) {
 uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
   uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.direct_tx_delay_factor);
   return getRNG()->nextInt(0, 5*t + 1);
+}
+int8_t MyMesh::getDirectRetryMinSNRX4() const {
+  // Use the live SF so `tempradio` changes immediately affect the retry threshold.
+  uint8_t sf = constrain(active_sf, (uint8_t)5, (uint8_t)12);
+  int16_t threshold = direct_retry_floor_x4[sf - 5] + ((int16_t)_prefs.direct_retry_snr_margin_db * 4);
+  return (int8_t)constrain(threshold, -128, 127);
+}
+bool MyMesh::allowDirectRetry(const mesh::Packet* packet, const uint8_t* next_hop_hash, uint8_t next_hop_hash_len) const {
+  if (_prefs.disable_fwd) {
+    return false;
+  }
+
+  int8_t min_snr_x4 = getDirectRetryMinSNRX4();
+  const NeighbourInfo* neighbour = findNeighbourByHash(next_hop_hash, next_hop_hash_len);
+  // Prefer the explicit neighbor table first; it is the strongest signal that this hop is still reachable.
+  if (neighbour != NULL && neighbour->snr >= min_snr_x4) {
+    return true;
+  }
+
+  if (!_prefs.direct_retry_recent_enabled) {
+    return false;
+  }
+
+  // If no neighbor entry exists, fall back to the recent-heard repeater cache keyed by the same path prefix.
+  const auto* recent = ((const SimpleMeshTables *)getTables())->findRecentRepeaterByHash(next_hop_hash, next_hop_hash_len);
+  return recent != NULL && recent->snr_x4 >= min_snr_x4;
+}
+uint32_t MyMesh::getDirectRetryEchoDelay(const mesh::Packet* packet) const {
+  // Approximate LoRa line rate in kilobits/sec from the live radio params the repeater is using now.
+  float kbps = (((float) active_sf) * active_bw * ((float) active_cr)) / ((float) (1UL << active_sf));
+  if (kbps <= 0.0f) {
+    return HALO_DIRECT_RETRY_DELAY_MIN;
+  }
+
+  // Wait roughly long enough for our transmission, the next hop's receive/forward window, and its echo back.
+  uint32_t bits = ((uint32_t) packet->getRawLength()) * 8;
+  uint32_t scaled_wait_millis = (uint32_t) ((((float) bits) * 4.0f) / kbps);
+  return max((uint32_t) HALO_DIRECT_RETRY_DELAY_MIN, scaled_wait_millis);
 }
 
 bool MyMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
@@ -859,6 +916,8 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.rx_delay_base = 0.0f;   // turn off by default, was 10.0;
   _prefs.tx_delay_factor = 0.5f; // was 0.25f
   _prefs.direct_tx_delay_factor = 0.3f; // was 0.2
+  _prefs.direct_retry_recent_enabled = 0;
+  _prefs.direct_retry_snr_margin_db = 5;
   StrHelper::strncpy(_prefs.node_name, ADVERT_NAME, sizeof(_prefs.node_name));
   _prefs.node_lat = ADVERT_LAT;
   _prefs.node_lon = ADVERT_LON;
@@ -899,6 +958,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 
   pending_discover_tag = 0;
   pending_discover_until = 0;
+  active_bw = _prefs.bw;
+  active_sf = _prefs.sf;
+  active_cr = _prefs.cr;
 }
 
 void MyMesh::begin(FILESYSTEM *fs) {
@@ -917,6 +979,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #endif
 
   radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+  active_bw = _prefs.bw;
+  active_sf = _prefs.sf;
+  active_cr = _prefs.cr;
   radio_set_tx_power(_prefs.tx_power_dbm);
 
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
@@ -1314,12 +1379,18 @@ void MyMesh::loop() {
   if (set_radio_at && millisHasNowPassed(set_radio_at)) { // apply pending (temporary) radio params
     set_radio_at = 0;                                     // clear timer
     radio_set_params(pending_freq, pending_bw, pending_sf, pending_cr);
+    active_bw = pending_bw;
+    active_sf = pending_sf;
+    active_cr = pending_cr;
     MESH_DEBUG_PRINTLN("Temp radio params");
   }
 
   if (revert_radio_at && millisHasNowPassed(revert_radio_at)) { // revert radio params to orig
     revert_radio_at = 0;                                        // clear timer
     radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+    active_bw = _prefs.bw;
+    active_sf = _prefs.sf;
+    active_cr = _prefs.cr;
     MESH_DEBUG_PRINTLN("Radio params restored");
   }
 

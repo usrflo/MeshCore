@@ -109,8 +109,11 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   unsigned long set_radio_at, revert_radio_at;
   float pending_freq;
   float pending_bw;
+  float active_bw;     // live BW, including temporary radio overrides
   uint8_t pending_sf;
+  uint8_t active_sf;  // live SF, including temporary radio overrides
   uint8_t pending_cr;
+  uint8_t active_cr;   // live CR, including temporary radio overrides
   int  matching_peer_indexes[MAX_CLIENTS];
 #if defined(WITH_RS232_BRIDGE)
   RS232Bridge bridge;
@@ -118,6 +121,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   ESPNowBridge bridge;
 #endif
 
+  const NeighbourInfo* findNeighbourByHash(const uint8_t* hash, uint8_t hash_len) const;
+  int8_t getDirectRetryMinSNRX4() const;
   void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
   void sendNodeDiscoverReq();
   uint8_t handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood);
@@ -146,6 +151,8 @@ protected:
 
   uint32_t getRetransmitDelay(const mesh::Packet* packet) override;
   uint32_t getDirectRetransmitDelay(const mesh::Packet* packet) override;
+  bool allowDirectRetry(const mesh::Packet* packet, const uint8_t* next_hop_hash, uint8_t next_hop_hash_len) const override;
+  uint32_t getDirectRetryEchoDelay(const mesh::Packet* packet) const override;
 
   int getInterferenceThreshold() const override {
     return _prefs.interference_threshold;

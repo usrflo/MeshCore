@@ -467,6 +467,34 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 
 ---
 
+#### View or change whether direct retries can fall back to the recently-heard repeater list
+**Usage:**
+- `get direct.retry.heard`
+- `set direct.retry.heard <state>`
+
+**Parameters:**
+- `state`: `on`|`off`
+
+**Default:** `off`
+
+**Note:** When enabled, a repeater can use recently-heard non-duplicate repeater prefixes as a fallback for direct retry eligibility when no suitable neighbor entry is available.
+
+---
+
+#### View or change the SNR margin used for direct retry eligibility
+**Usage:**
+- `get direct.retry.margin`
+- `set direct.retry.margin <value>`
+
+**Parameters:**
+- `value`: Margin in dB above the SF-specific receive floor (minimum `0`, default `5`)
+
+**Default:** `5`
+
+**Note:** The retry gate uses the active SF floor of `SF5=-2.5`, `SF6=-5`, `SF7=-7.5`, `SF8=-10`, `SF9=-12.5`, `SF10=-15`, `SF11=-17.5`, `SF12=-20`, then adds this margin.
+
+---
+
 #### [Experimental] View or change the processing delay for received traffic
 **Usage:**
 - `get rxdelay`
