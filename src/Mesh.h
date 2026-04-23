@@ -34,6 +34,7 @@ class Mesh : public Dispatcher {
     Packet* trigger_packet;
     unsigned long retry_at;
     uint32_t retry_delay;
+    uint8_t retry_attempts_sent;
     uint8_t retry_key[MAX_HASH_SIZE];
     uint8_t priority;
     uint8_t progress_marker;
@@ -110,6 +111,11 @@ protected:
    * \returns  number of extra (Direct) ACK transmissions wanted.
    */
   virtual uint8_t getExtraAckTransmitCount() const;
+
+  /**
+   * \brief  Optional hook for logging direct-retry lifecycle events.
+   */
+  virtual void onDirectRetryEvent(const char* event, const Packet* packet, uint32_t delay_millis) { }
 
   /**
    * \brief  Perform search of local DB of peers/contacts.

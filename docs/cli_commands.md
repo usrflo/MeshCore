@@ -115,6 +115,19 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 
 ---
 
+### Get or set recent repeater fallback prefix/SNR
+**Usage:**
+- `recent.repeater`
+- `recent.repeater <prefix_hex> <snr_db>`
+
+**Parameters:**
+- `prefix_hex`: 1-3 bytes of next-hop prefix (hex)
+- `snr_db`: SNR in dB (supports decimals; stored at x4 precision)
+
+**Note:** `set` is rejected when the prefix already exists in neighbors.
+
+---
+
 ## Statistics
 
 ### Clear Stats

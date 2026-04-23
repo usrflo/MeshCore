@@ -77,6 +77,15 @@ const NeighbourInfo* MyMesh::findNeighbourByHash(const uint8_t* hash, uint8_t ha
   return NULL;
 }
 
+bool MyMesh::allowRecentRepeaterPrefixStore(const uint8_t* prefix, uint8_t prefix_len, void* ctx) {
+  if (ctx == NULL || prefix == NULL || prefix_len == 0) {
+    return true;
+  }
+
+  const MyMesh* self = (const MyMesh*) ctx;
+  return self->findNeighbourByHash(prefix, prefix_len) == NULL;
+}
+
 void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
 #if MAX_NEIGHBOURS // check if neighbours enabled
   // find existing neighbour, else use least recently updated
@@ -550,6 +559,34 @@ void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
   }
 }
 
+void MyMesh::onDirectRetryEvent(const char* event, const mesh::Packet* packet, uint32_t delay_millis) {
+  if (packet == NULL) {
+    return;
+  }
+
+  MESH_DEBUG_PRINTLN("%s direct retry %s (type=%d, route=%s, payload_len=%d, delay=%lu)",
+                     getLogDateTime(),
+                     event,
+                     (uint32_t)packet->getPayloadType(),
+                     packet->isRouteDirect() ? "D" : "F",
+                     (uint32_t)packet->payload_len,
+                     (unsigned long)delay_millis);
+
+  if (_logging) {
+    File f = openAppend(PACKET_LOG_FILE);
+    if (f) {
+      f.print(getLogDateTime());
+      f.printf(": DIRECT RETRY %s (type=%d, route=%s, payload_len=%d, delay=%lu)\n",
+               event,
+               (uint32_t)packet->getPayloadType(),
+               packet->isRouteDirect() ? "D" : "F",
+               (uint32_t)packet->payload_len,
+               (unsigned long)delay_millis);
+      f.close();
+    }
+  }
+}
+
 int MyMesh::calcRxDelay(float score, uint32_t air_time) const {
   if (_prefs.rx_delay_base <= 0.0f) return 0;
   return (int)((pow(_prefs.rx_delay_base, 0.85f - score) - 1.0) * air_time);
@@ -976,6 +1013,8 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   active_bw = _prefs.bw;
   active_sf = _prefs.sf;
   active_cr = _prefs.cr;
+
+  ((SimpleMeshTables *)getTables())->setRecentRepeaterAllowFilter(&MyMesh::allowRecentRepeaterPrefixStore, this);
 }
 
 void MyMesh::begin(FILESYSTEM *fs) {
@@ -1017,6 +1056,7 @@ void MyMesh::begin(FILESYSTEM *fs) {
   active_bw = _prefs.bw;
   active_sf = _prefs.sf;
   active_cr = _prefs.cr;
+  ((SimpleMeshTables *)getTables())->setRecentRepeaterMinSNRX4(getDirectRetryMinSNRX4());
   radio_set_tx_power(_prefs.tx_power_dbm);
 
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
@@ -1305,6 +1345,48 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       Serial.printf("\n");
     }
     reply[0] = 0;
+  } else if (memcmp(command, "recent.repeater", 15) == 0) {
+    const char* sub = command + 15;
+    while (*sub == ' ') sub++;
+    auto* tables = (SimpleMeshTables*)getTables();
+    if (*sub == 0) {
+      const auto* info = tables->getLatestRecentRepeater();
+      if (info == NULL) {
+        strcpy(reply, "> none");
+      } else {
+        char hex[(MAX_ROUTE_HASH_BYTES * 2) + 1];
+        mesh::Utils::toHex(hex, info->prefix, info->prefix_len);
+        sprintf(reply, "> %s,%s", hex, StrHelper::ftoa(((float)info->snr_x4) / 4.0f));
+      }
+    } else {
+      char* params = (char*) sub;
+      char* arg_snr = strchr(params, ' ');
+      if (arg_snr == NULL) {
+        strcpy(reply, "Err - usage: recent.repeater <prefix_hex> <snr_db>");
+      } else {
+        *arg_snr++ = 0;
+        while (*arg_snr == ' ') arg_snr++;
+        if (*arg_snr == 0) {
+          strcpy(reply, "Err - usage: recent.repeater <prefix_hex> <snr_db>");
+        } else {
+          int hex_len = strlen(params);
+          int prefix_len = hex_len / 2;
+          uint8_t prefix[MAX_ROUTE_HASH_BYTES] = {0};
+          if ((hex_len % 2) != 0 || prefix_len <= 0 || prefix_len > MAX_ROUTE_HASH_BYTES || !mesh::Utils::fromHex(prefix, prefix_len, params)) {
+            strcpy(reply, "Err - prefix must be 1-3 bytes hex");
+          } else {
+            float snr_db = strtof(arg_snr, nullptr);
+            int snr_x4 = (int)(snr_db * 4.0f + (snr_db >= 0.0f ? 0.5f : -0.5f));
+            snr_x4 = constrain(snr_x4, -128, 127);
+            if (tables->setRecentRepeater(prefix, (uint8_t)prefix_len, (int8_t)snr_x4)) {
+              strcpy(reply, "OK");
+            } else {
+              strcpy(reply, "Err - prefix is already in neighbors");
+            }
+          }
+        }
+      }
+    }
   } else if (memcmp(command, "discover.neighbors", 18) == 0) {
     const char* sub = command + 18;
     while (*sub == ' ') sub++;
@@ -1357,6 +1439,9 @@ void MyMesh::loop() {
     active_cr = _prefs.cr;
     MESH_DEBUG_PRINTLN("Radio params restored");
   }
+
+  // Keep recent-prefix learning aligned with the live retry SNR gate.
+  ((SimpleMeshTables *)getTables())->setRecentRepeaterMinSNRX4(getDirectRetryMinSNRX4());
 
   // is pending dirty contacts write needed?
   if (dirty_contacts_expiry && millisHasNowPassed(dirty_contacts_expiry)) {

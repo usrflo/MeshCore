@@ -13,6 +13,8 @@
 
 class SimpleMeshTables : public mesh::MeshTables {
 public:
+  typedef bool (*RecentRepeaterAllowFn)(const uint8_t* prefix, uint8_t prefix_len, void* ctx);
+
   struct RecentRepeaterInfo {
     // Just enough identity to match a next-hop path prefix plus the SNR that heard it.
     uint8_t prefix[MAX_ROUTE_HASH_BYTES];
@@ -28,6 +30,9 @@ private:
   uint32_t _direct_dups, _flood_dups;
   RecentRepeaterInfo _recent_repeaters[MAX_RECENT_REPEATERS];
   int _next_recent_repeater_idx;
+  int8_t _recent_repeater_min_snr_x4;
+  RecentRepeaterAllowFn _recent_repeater_allow_fn;
+  void* _recent_repeater_allow_ctx;
 
   bool hasSeenAck(uint32_t ack) const {
     for (int i = 0; i < MAX_PACKET_ACKS; i++) {
@@ -56,6 +61,11 @@ private:
   void storeHash(const uint8_t* hash) {
     memcpy(&_hashes[_next_idx*MAX_HASH_SIZE], hash, MAX_HASH_SIZE);
     _next_idx = (_next_idx + 1) % MAX_PACKET_HASHES;
+  }
+
+  bool prefixesOverlap(const uint8_t* a, uint8_t a_len, const uint8_t* b, uint8_t b_len) const {
+    uint8_t n = a_len < b_len ? a_len : b_len;
+    return n > 0 && memcmp(a, b, n) == 0;
   }
 
   bool extractRecentRepeater(const mesh::Packet* packet, uint8_t* prefix, uint8_t& prefix_len) const {
@@ -96,14 +106,10 @@ private:
     if (!extractRecentRepeater(packet, prefix, prefix_len) || prefix_len == 0) {
       return;
     }
-
-    // Ring buffer is enough here; retry fallback only needs a recent prefix->SNR observation.
-    RecentRepeaterInfo& slot = _recent_repeaters[_next_recent_repeater_idx];
-    memset(slot.prefix, 0, sizeof(slot.prefix));
-    memcpy(slot.prefix, prefix, prefix_len);
-    slot.prefix_len = prefix_len;
-    slot.snr_x4 = packet->_snr;
-    _next_recent_repeater_idx = (_next_recent_repeater_idx + 1) % MAX_RECENT_REPEATERS;
+    if (packet->_snr < _recent_repeater_min_snr_x4) {
+      return;
+    }
+    setRecentRepeater(prefix, prefix_len, packet->_snr);
   }
 
 public:
@@ -115,6 +121,9 @@ public:
     _direct_dups = _flood_dups = 0;
     memset(_recent_repeaters, 0, sizeof(_recent_repeaters));
     _next_recent_repeater_idx = 0;
+    _recent_repeater_min_snr_x4 = -128;
+    _recent_repeater_allow_fn = NULL;
+    _recent_repeater_allow_ctx = NULL;
   }
 
 #ifdef ESP32
@@ -216,19 +225,74 @@ public:
   uint32_t getNumDirectDups() const { return _direct_dups; }
   uint32_t getNumFloodDups() const { return _flood_dups; }
 
+  void setRecentRepeaterMinSNRX4(int8_t min_snr_x4) {
+    _recent_repeater_min_snr_x4 = min_snr_x4;
+  }
+  void setRecentRepeaterAllowFilter(RecentRepeaterAllowFn fn, void* ctx) {
+    _recent_repeater_allow_fn = fn;
+    _recent_repeater_allow_ctx = ctx;
+  }
+  bool setRecentRepeater(const uint8_t* prefix, uint8_t prefix_len, int8_t snr_x4) {
+    if (prefix == NULL || prefix_len == 0) {
+      return false;
+    }
+
+    if (prefix_len > MAX_ROUTE_HASH_BYTES) {
+      prefix_len = MAX_ROUTE_HASH_BYTES;
+    }
+
+    if (_recent_repeater_allow_fn != NULL && !_recent_repeater_allow_fn(prefix, prefix_len, _recent_repeater_allow_ctx)) {
+      return false;
+    }
+
+    // Keep one slot for overlapping prefixes so 1/2/3-byte paths share the same entry.
+    for (int i = 0; i < MAX_RECENT_REPEATERS; i++) {
+      RecentRepeaterInfo& existing = _recent_repeaters[i];
+      if (existing.prefix_len == 0 || !prefixesOverlap(existing.prefix, existing.prefix_len, prefix, prefix_len)) {
+        continue;
+      }
+      if (prefix_len > existing.prefix_len) {
+        memset(existing.prefix, 0, sizeof(existing.prefix));
+        memcpy(existing.prefix, prefix, prefix_len);
+        existing.prefix_len = prefix_len;
+      }
+      existing.snr_x4 = snr_x4;
+      return true;
+    }
+
+    // Ring buffer is enough here; retry fallback only needs a recent prefix->SNR observation.
+    RecentRepeaterInfo& slot = _recent_repeaters[_next_recent_repeater_idx];
+    memset(slot.prefix, 0, sizeof(slot.prefix));
+    memcpy(slot.prefix, prefix, prefix_len);
+    slot.prefix_len = prefix_len;
+    slot.snr_x4 = snr_x4;
+    _next_recent_repeater_idx = (_next_recent_repeater_idx + 1) % MAX_RECENT_REPEATERS;
+    return true;
+  }
+  const RecentRepeaterInfo* getLatestRecentRepeater() const {
+    for (int i = 0; i < MAX_RECENT_REPEATERS; i++) {
+      int idx = (_next_recent_repeater_idx - 1 - i + MAX_RECENT_REPEATERS) % MAX_RECENT_REPEATERS;
+      const RecentRepeaterInfo* info = &_recent_repeaters[idx];
+      if (info->prefix_len > 0) {
+        return info;
+      }
+    }
+    return NULL;
+  }
+
   const RecentRepeaterInfo* findRecentRepeaterByHash(const uint8_t* hash, uint8_t hash_len) const {
     if (hash == NULL || hash_len == 0) {
       return NULL;
     }
 
-    // Search newest-to-oldest so the retry gate prefers the freshest SNR sample for a prefix.
+    // Search newest-to-oldest and allow 1/2/3-byte prefixes to overlap-match.
     for (int i = 0; i < MAX_RECENT_REPEATERS; i++) {
       int idx = (_next_recent_repeater_idx - 1 - i + MAX_RECENT_REPEATERS) % MAX_RECENT_REPEATERS;
       const RecentRepeaterInfo* info = &_recent_repeaters[idx];
-      if (info->prefix_len < hash_len || info->prefix_len == 0) {
+      if (info->prefix_len == 0) {
         continue;
       }
-      if (memcmp(info->prefix, hash, hash_len) == 0) {
+      if (prefixesOverlap(info->prefix, info->prefix_len, hash, hash_len)) {
         return info;
       }
     }

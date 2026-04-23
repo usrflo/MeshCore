@@ -123,6 +123,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
 #endif
 
   const NeighbourInfo* findNeighbourByHash(const uint8_t* hash, uint8_t hash_len) const;
+  static bool allowRecentRepeaterPrefixStore(const uint8_t* prefix, uint8_t prefix_len, void* ctx);
   int8_t getDirectRetryMinSNRX4() const;
   void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
   uint8_t handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood);
@@ -153,6 +154,7 @@ protected:
   uint32_t getDirectRetransmitDelay(const mesh::Packet* packet) override;
   bool allowDirectRetry(const mesh::Packet* packet, const uint8_t* next_hop_hash, uint8_t next_hop_hash_len) const override;
   uint32_t getDirectRetryEchoDelay(const mesh::Packet* packet) const override;
+  void onDirectRetryEvent(const char* event, const mesh::Packet* packet, uint32_t delay_millis) override;
 
   int getInterferenceThreshold() const override {
     return _prefs.interference_threshold;

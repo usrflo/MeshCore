@@ -3,12 +3,16 @@
 
 namespace mesh {
 
+static const uint8_t DIRECT_RETRY_MAX_ATTEMPTS = 3;
+static const uint32_t DIRECT_RETRY_BACKOFF_MS[DIRECT_RETRY_MAX_ATTEMPTS] = { 200, 300, 400 };
+
 void Mesh::begin() {
   for (int i = 0; i < MAX_DIRECT_RETRY_SLOTS; i++) {
     _direct_retries[i].packet = NULL;
     _direct_retries[i].trigger_packet = NULL;
     _direct_retries[i].retry_at = 0;
     _direct_retries[i].retry_delay = 0;
+    _direct_retries[i].retry_attempts_sent = 0;
     _direct_retries[i].priority = 0;
     _direct_retries[i].progress_marker = 0;
     _direct_retries[i].expect_path_growth = false;
@@ -27,6 +31,9 @@ void Mesh::loop() {
     }
 
     if (!isDirectRetryQueued(_direct_retries[i].packet)) {
+      if (_direct_retries[i].packet == getOutboundInFlight()) {
+        continue;  // currently transmitting; keep slot until onSendComplete/onSendFail emits event
+      }
       clearDirectRetrySlot(i);
     }
   }
@@ -436,6 +443,7 @@ void Mesh::clearDirectRetrySlot(int idx) {
   _direct_retries[idx].trigger_packet = NULL;
   _direct_retries[idx].retry_at = 0;
   _direct_retries[idx].retry_delay = 0;
+  _direct_retries[idx].retry_attempts_sent = 0;
   _direct_retries[idx].priority = 0;
   _direct_retries[idx].progress_marker = 0;
   _direct_retries[idx].expect_path_growth = false;
@@ -484,8 +492,12 @@ bool Mesh::cancelDirectRetryOnEcho(const Packet* packet) {
           break;
         }
       }
+      onDirectRetryEvent("canceled_echo", _direct_retries[i].packet, 0);
+      onDirectRetryEvent("good", _direct_retries[i].packet, 0);
       clearDirectRetrySlot(i);
     } else {
+      onDirectRetryEvent("canceled_echo", _direct_retries[i].trigger_packet, 0);
+      onDirectRetryEvent("good", _direct_retries[i].trigger_packet, 0);
       clearDirectRetrySlot(i);
     }
     cleared = true;
@@ -503,7 +515,35 @@ void Mesh::armDirectRetryOnSendComplete(const Packet* packet) {
     if (_direct_retries[i].queued) {
       if (_direct_retries[i].packet == packet) {
         // The retry packet itself just finished transmitting; Dispatcher will release it after this hook.
-        clearDirectRetrySlot(i);
+        onDirectRetryEvent("resent", packet, 0);
+        _direct_retries[i].retry_attempts_sent++;
+        if (_direct_retries[i].retry_attempts_sent >= DIRECT_RETRY_MAX_ATTEMPTS) {
+          onDirectRetryEvent("failure", packet, 0);
+          clearDirectRetrySlot(i);
+          continue;
+        }
+
+        Packet* retry = obtainNewPacket();
+        if (retry == NULL) {
+          onDirectRetryEvent("dropped_no_packet", packet, 0);
+          onDirectRetryEvent("failure", packet, 0);
+          clearDirectRetrySlot(i);
+          continue;
+        }
+
+        *retry = *packet;
+        uint32_t retry_delay = DIRECT_RETRY_BACKOFF_MS[_direct_retries[i].retry_attempts_sent];
+        sendPacket(retry, _direct_retries[i].priority, retry_delay);
+        if (isDirectRetryQueued(retry)) {
+          _direct_retries[i].packet = retry;
+          _direct_retries[i].retry_delay = retry_delay;
+          _direct_retries[i].retry_at = futureMillis(retry_delay);
+          onDirectRetryEvent("queued", retry, retry_delay);
+        } else {
+          onDirectRetryEvent("dropped_queue_full", retry, retry_delay);
+          onDirectRetryEvent("failure", retry, 0);
+          clearDirectRetrySlot(i);
+        }
       }
       continue;
     }
@@ -515,6 +555,8 @@ void Mesh::armDirectRetryOnSendComplete(const Packet* packet) {
     // Allocate the retry packet only after TX-complete so busy repeaters do not reserve pool slots early.
     Packet* retry = obtainNewPacket();
     if (retry == NULL) {
+      onDirectRetryEvent("dropped_no_packet", packet, _direct_retries[i].retry_delay);
+      onDirectRetryEvent("failure", packet, 0);
       clearDirectRetrySlot(i);
       continue;
     }
@@ -528,7 +570,10 @@ void Mesh::armDirectRetryOnSendComplete(const Packet* packet) {
       _direct_retries[i].trigger_packet = NULL;
       _direct_retries[i].queued = true;
       _direct_retries[i].retry_at = futureMillis(_direct_retries[i].retry_delay);
+      onDirectRetryEvent("queued", retry, _direct_retries[i].retry_delay);
     } else {
+      onDirectRetryEvent("dropped_queue_full", retry, _direct_retries[i].retry_delay);
+      onDirectRetryEvent("failure", retry, 0);
       clearDirectRetrySlot(i);
     }
   }
@@ -543,12 +588,16 @@ void Mesh::clearPendingDirectRetryOnSendFail(const Packet* packet) {
     if (_direct_retries[i].queued) {
       if (_direct_retries[i].packet == packet) {
         // The queued retry itself failed; Dispatcher will release it after this hook.
+        onDirectRetryEvent("dropped_send_fail", packet, 0);
+        onDirectRetryEvent("failure", packet, 0);
         clearDirectRetrySlot(i);
       }
       continue;
     }
 
     if (_direct_retries[i].trigger_packet == packet) {
+      onDirectRetryEvent("dropped_send_fail", packet, 0);
+      onDirectRetryEvent("failure", packet, 0);
       clearDirectRetrySlot(i);
     }
   }
@@ -631,17 +680,19 @@ void Mesh::maybeScheduleDirectRetry(const Packet* packet, uint8_t priority) {
   }
 
   // Only store retry metadata here; allocate the retry packet after the initial TX really completes.
-  uint32_t retry_delay = getDirectRetryEchoDelay(packet);
+  uint32_t retry_delay = DIRECT_RETRY_BACKOFF_MS[0];
   calculateDirectRetryKey(packet, _direct_retries[slot_idx].retry_key);
   _direct_retries[slot_idx].packet = NULL;
   _direct_retries[slot_idx].trigger_packet = const_cast<Packet*>(packet);
   _direct_retries[slot_idx].retry_at = 0;
   _direct_retries[slot_idx].retry_delay = retry_delay;
+  _direct_retries[slot_idx].retry_attempts_sent = 0;
   _direct_retries[slot_idx].priority = priority;
   _direct_retries[slot_idx].progress_marker = progress_marker;
   _direct_retries[slot_idx].expect_path_growth = expect_path_growth;
   _direct_retries[slot_idx].queued = false;
   _direct_retries[slot_idx].active = true;
+  onDirectRetryEvent("armed", packet, retry_delay);
 }
 
 Packet* Mesh::createAdvert(const LocalIdentity& id, const uint8_t* app_data, size_t app_data_len) {
@@ -983,4 +1034,3 @@ void Mesh::sendZeroHop(Packet* packet, uint16_t* transport_codes, uint32_t delay
 }
 
 }
-
