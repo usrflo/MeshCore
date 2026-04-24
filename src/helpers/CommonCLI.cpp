@@ -14,6 +14,14 @@
 #define DIRECT_RETRY_RECENT_DEFAULT          0
 #define DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT  5
 #define DIRECT_RETRY_SNR_MARGIN_DB_MAX     40
+#define DIRECT_RETRY_TIMING_MAGIC_0 0xD5
+#define DIRECT_RETRY_TIMING_MAGIC_1 0x54
+#define DIRECT_RETRY_COUNT_DEFAULT   3
+#define DIRECT_RETRY_COUNT_MIN       1
+#define DIRECT_RETRY_COUNT_MAX      15
+#define DIRECT_RETRY_BASE_MS_DEFAULT 200
+#define DIRECT_RETRY_BASE_MS_MIN      10
+#define DIRECT_RETRY_BASE_MS_MAX   5000
 
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
@@ -97,7 +105,10 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     file.read((uint8_t *)&_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));                 // 166
     file.read((uint8_t *)_prefs->owner_info, sizeof(_prefs->owner_info));                          // 170
     file.read((uint8_t *)&_prefs->rx_boosted_gain, sizeof(_prefs->rx_boosted_gain));              // 290
-    // next: 291
+    file.read((uint8_t *)&_prefs->direct_retry_attempts, sizeof(_prefs->direct_retry_attempts));  // 291
+    file.read((uint8_t *)&_prefs->direct_retry_base_ms, sizeof(_prefs->direct_retry_base_ms));    // 292
+    file.read((uint8_t *)&_prefs->direct_retry_timing_magic[0], sizeof(_prefs->direct_retry_timing_magic)); // 294
+    // next: 296
 
     // sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0, 20.0f);
@@ -120,6 +131,14 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     } else {
       _prefs->direct_retry_recent_enabled = constrain(_prefs->direct_retry_recent_enabled, 0, 1);
       _prefs->direct_retry_snr_margin_db = constrain(_prefs->direct_retry_snr_margin_db, 0, DIRECT_RETRY_SNR_MARGIN_DB_MAX);
+    }
+    if (_prefs->direct_retry_timing_magic[0] != DIRECT_RETRY_TIMING_MAGIC_0
+        || _prefs->direct_retry_timing_magic[1] != DIRECT_RETRY_TIMING_MAGIC_1) {
+      _prefs->direct_retry_attempts = DIRECT_RETRY_COUNT_DEFAULT;
+      _prefs->direct_retry_base_ms = DIRECT_RETRY_BASE_MS_DEFAULT;
+    } else {
+      _prefs->direct_retry_attempts = constrain(_prefs->direct_retry_attempts, DIRECT_RETRY_COUNT_MIN, DIRECT_RETRY_COUNT_MAX);
+      _prefs->direct_retry_base_ms = constrain(_prefs->direct_retry_base_ms, DIRECT_RETRY_BASE_MS_MIN, DIRECT_RETRY_BASE_MS_MAX);
     }
 
     // sanitise bad bridge pref values
@@ -201,7 +220,11 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));                 // 166
     file.write((uint8_t *)_prefs->owner_info, sizeof(_prefs->owner_info));                          // 170
     file.write((uint8_t *)&_prefs->rx_boosted_gain, sizeof(_prefs->rx_boosted_gain));              // 290
-    // next: 291
+    file.write((uint8_t *)&_prefs->direct_retry_attempts, sizeof(_prefs->direct_retry_attempts));  // 291
+    file.write((uint8_t *)&_prefs->direct_retry_base_ms, sizeof(_prefs->direct_retry_base_ms));    // 292
+    uint8_t retry_timing_magic[2] = { DIRECT_RETRY_TIMING_MAGIC_0, DIRECT_RETRY_TIMING_MAGIC_1 };
+    file.write(retry_timing_magic, sizeof(retry_timing_magic));                                     // 294
+    // next: 296
 
     file.close();
   }
@@ -363,6 +386,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
         sprintf(reply, "> %s", _prefs->direct_retry_recent_enabled ? "on" : "off");
       } else if (memcmp(config, "direct.retry.margin", 19) == 0) {
         sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_snr_margin_db);
+      } else if (memcmp(config, "direct.retry.count", 18) == 0) {
+        sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_attempts);
+      } else if (memcmp(config, "direct.retry.base", 17) == 0) {
+        sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_base_ms);
       } else if (memcmp(config, "owner.info", 10) == 0) {
         *reply++ = '>';
         *reply++ = ' ';
@@ -632,6 +659,24 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
           strcpy(reply, "OK");
         } else {
           sprintf(reply, "Error, min 0 and max %d", DIRECT_RETRY_SNR_MARGIN_DB_MAX);
+        }
+      } else if (memcmp(config, "direct.retry.count ", 19) == 0) {
+        int count = atoi(&config[19]);
+        if (count >= DIRECT_RETRY_COUNT_MIN && count <= DIRECT_RETRY_COUNT_MAX) {
+          _prefs->direct_retry_attempts = (uint8_t)count;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else {
+          sprintf(reply, "Error, min %d and max %d", DIRECT_RETRY_COUNT_MIN, DIRECT_RETRY_COUNT_MAX);
+        }
+      } else if (memcmp(config, "direct.retry.base ", 18) == 0) {
+        int delay_ms = atoi(&config[18]);
+        if (delay_ms >= DIRECT_RETRY_BASE_MS_MIN && delay_ms <= DIRECT_RETRY_BASE_MS_MAX) {
+          _prefs->direct_retry_base_ms = (uint16_t)delay_ms;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else {
+          sprintf(reply, "Error, min %d and max %d", DIRECT_RETRY_BASE_MS_MIN, DIRECT_RETRY_BASE_MS_MAX);
         }
       } else if (memcmp(config, "owner.info ", 11) == 0) {
         config += 11;
