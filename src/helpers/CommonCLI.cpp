@@ -11,12 +11,13 @@
 // These bytes used to be reserved/unused in persisted prefs, so keep a marker before trusting them.
 #define DIRECT_RETRY_PREFS_MAGIC_0  0xD4
 #define DIRECT_RETRY_PREFS_MAGIC_1  0x52
-#define DIRECT_RETRY_RECENT_DEFAULT          0
-#define DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT  5
-#define DIRECT_RETRY_SNR_MARGIN_DB_MAX     40
+#define DIRECT_RETRY_RECENT_DEFAULT          1
+#define DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT_X4  10
+#define DIRECT_RETRY_SNR_MARGIN_DB_MAX       40
+#define DIRECT_RETRY_SNR_MARGIN_X4_MAX      (DIRECT_RETRY_SNR_MARGIN_DB_MAX * 4)
 #define DIRECT_RETRY_TIMING_MAGIC_0 0xD5
 #define DIRECT_RETRY_TIMING_MAGIC_1 0x54
-#define DIRECT_RETRY_COUNT_DEFAULT   3
+#define DIRECT_RETRY_COUNT_DEFAULT  15
 #define DIRECT_RETRY_COUNT_MIN       1
 #define DIRECT_RETRY_COUNT_MAX      15
 #define DIRECT_RETRY_BASE_MS_DEFAULT 200
@@ -31,6 +32,15 @@ static uint32_t _atoi(const char* sp) {
     n += (*sp++ - '0');
   }
   return n;
+}
+
+static uint8_t directRetryMarginDbToX4(float margin_db) {
+  int32_t scaled_x4 = (int32_t)((margin_db * 4.0f) + 0.5f);  // nearest 0.25 dB
+  return (uint8_t)constrain(scaled_x4, 0, DIRECT_RETRY_SNR_MARGIN_X4_MAX);
+}
+
+static float directRetryMarginX4ToDb(uint8_t margin_x4) {
+  return ((float)margin_x4) / 4.0f;
 }
 
 static bool isValidName(const char *n) {
@@ -127,10 +137,10 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     if (_prefs->direct_retry_prefs_magic[0] != DIRECT_RETRY_PREFS_MAGIC_0
         || _prefs->direct_retry_prefs_magic[1] != DIRECT_RETRY_PREFS_MAGIC_1) {
       _prefs->direct_retry_recent_enabled = DIRECT_RETRY_RECENT_DEFAULT;
-      _prefs->direct_retry_snr_margin_db = DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT;
+      _prefs->direct_retry_snr_margin_db = DIRECT_RETRY_SNR_MARGIN_DB_DEFAULT_X4;
     } else {
       _prefs->direct_retry_recent_enabled = constrain(_prefs->direct_retry_recent_enabled, 0, 1);
-      _prefs->direct_retry_snr_margin_db = constrain(_prefs->direct_retry_snr_margin_db, 0, DIRECT_RETRY_SNR_MARGIN_DB_MAX);
+      _prefs->direct_retry_snr_margin_db = constrain(_prefs->direct_retry_snr_margin_db, 0, DIRECT_RETRY_SNR_MARGIN_X4_MAX);
     }
     if (_prefs->direct_retry_timing_magic[0] != DIRECT_RETRY_TIMING_MAGIC_0
         || _prefs->direct_retry_timing_magic[1] != DIRECT_RETRY_TIMING_MAGIC_1) {
@@ -385,7 +395,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       } else if (memcmp(config, "direct.retry.heard", 18) == 0) {
         sprintf(reply, "> %s", _prefs->direct_retry_recent_enabled ? "on" : "off");
       } else if (memcmp(config, "direct.retry.margin", 19) == 0) {
-        sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_snr_margin_db);
+        sprintf(reply, "> %s", StrHelper::ftoa(directRetryMarginX4ToDb(_prefs->direct_retry_snr_margin_db)));
       } else if (memcmp(config, "direct.retry.count", 18) == 0) {
         sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_attempts);
       } else if (memcmp(config, "direct.retry.base", 17) == 0) {
@@ -652,9 +662,9 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
           strcpy(reply, "Error, must be on or off");
         }
       } else if (memcmp(config, "direct.retry.margin ", 20) == 0) {
-        int db = atoi(&config[20]);
+        float db = atof(&config[20]);
         if (db >= 0 && db <= DIRECT_RETRY_SNR_MARGIN_DB_MAX) {
-          _prefs->direct_retry_snr_margin_db = (uint8_t)db;
+          _prefs->direct_retry_snr_margin_db = directRetryMarginDbToX4(db);
           savePrefs();
           strcpy(reply, "OK");
         } else {
@@ -1113,6 +1123,45 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     } else {
       strcpy(reply, "Error, cannot be negative");
     }
+  } else if (memcmp(config, "direct.retry.heard ", 19) == 0) {
+    if (memcmp(&config[19], "on", 2) == 0) {
+      _prefs->direct_retry_recent_enabled = 1;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else if (memcmp(&config[19], "off", 3) == 0) {
+      _prefs->direct_retry_recent_enabled = 0;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Error, must be on or off");
+    }
+  } else if (memcmp(config, "direct.retry.margin ", 20) == 0) {
+    float db = atof(&config[20]);
+    if (db >= 0 && db <= DIRECT_RETRY_SNR_MARGIN_DB_MAX) {
+      _prefs->direct_retry_snr_margin_db = directRetryMarginDbToX4(db);
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      sprintf(reply, "Error, min 0 and max %d", DIRECT_RETRY_SNR_MARGIN_DB_MAX);
+    }
+  } else if (memcmp(config, "direct.retry.count ", 19) == 0) {
+    int count = atoi(&config[19]);
+    if (count >= DIRECT_RETRY_COUNT_MIN && count <= DIRECT_RETRY_COUNT_MAX) {
+      _prefs->direct_retry_attempts = (uint8_t)count;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      sprintf(reply, "Error, min %d and max %d", DIRECT_RETRY_COUNT_MIN, DIRECT_RETRY_COUNT_MAX);
+    }
+  } else if (memcmp(config, "direct.retry.base ", 18) == 0) {
+    int delay_ms = atoi(&config[18]);
+    if (delay_ms >= DIRECT_RETRY_BASE_MS_MIN && delay_ms <= DIRECT_RETRY_BASE_MS_MAX) {
+      _prefs->direct_retry_base_ms = (uint16_t)delay_ms;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      sprintf(reply, "Error, min %d and max %d", DIRECT_RETRY_BASE_MS_MIN, DIRECT_RETRY_BASE_MS_MAX);
+    }
   } else if (memcmp(config, "owner.info ", 11) == 0) {
     config += 11;
     char *dp = _prefs->owner_info;
@@ -1282,6 +1331,14 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %d", (uint32_t)_prefs->flood_max);
   } else if (memcmp(config, "direct.txdelay", 14) == 0) {
     sprintf(reply, "> %s", StrHelper::ftoa(_prefs->direct_tx_delay_factor));
+  } else if (memcmp(config, "direct.retry.heard", 18) == 0) {
+    sprintf(reply, "> %s", _prefs->direct_retry_recent_enabled ? "on" : "off");
+  } else if (memcmp(config, "direct.retry.margin", 19) == 0) {
+    sprintf(reply, "> %s", StrHelper::ftoa(directRetryMarginX4ToDb(_prefs->direct_retry_snr_margin_db)));
+  } else if (memcmp(config, "direct.retry.count", 18) == 0) {
+    sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_attempts);
+  } else if (memcmp(config, "direct.retry.base", 17) == 0) {
+    sprintf(reply, "> %d", (uint32_t)_prefs->direct_retry_base_ms);
   } else if (memcmp(config, "owner.info", 10) == 0) {
     *reply++ = '>';
     *reply++ = ' ';
