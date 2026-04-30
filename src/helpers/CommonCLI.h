@@ -33,7 +33,9 @@ struct NodePrefs { // persisted to file
   float tx_delay_factor;
   char guest_password[16];
   float direct_tx_delay_factor;
-  uint32_t guard;
+  uint8_t direct_retry_recent_enabled;
+  uint8_t direct_retry_snr_margin_db; // stored in quarter-dB units (x4)
+  uint8_t direct_retry_prefs_magic[2];
   uint8_t sf;
   uint8_t cr;
   uint8_t allow_read_only;
@@ -61,6 +63,9 @@ struct NodePrefs { // persisted to file
   uint8_t rx_boosted_gain; // power settings
   uint8_t path_hash_mode;   // which path mode to use when sending
   uint8_t loop_detect;
+  uint8_t direct_retry_attempts;
+  uint16_t direct_retry_base_ms;
+  uint8_t direct_retry_timing_magic[2];
 };
 
 class CommonCLICallbacks {

@@ -115,6 +115,26 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 
 ---
 
+### Get or set recent repeater fallback prefix/SNR
+**Usage:**
+- `get recent.repeater`
+- `get recent.repeater <page>`
+- `get recent.repeater page <page>`
+- `set recent.repeater <prefix_hex_6> <snr_db>`
+
+**Parameters:**
+- `prefix_hex_6`: Exactly 3 bytes of next-hop prefix in hex (6 chars)
+- `snr_db`: SNR in dB (supports decimals; stored at x4 precision)
+- `page`: 1-based page number
+
+**Notes:**
+- `set` is rejected when the prefix already exists in neighbors.
+- Rows are shown newest-first.
+- Serial CLI prints all rows (no paging).
+- Over LoRa remote CLI, page size is fixed at `4` rows; choose page with `get recent.repeater <page>`.
+
+---
+
 ## Statistics
 
 ### Clear Stats
@@ -501,6 +521,60 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 - `value`: Direct transmit delay factor (0-2)
 
 **Default:** `0.2`
+
+---
+
+#### View or change whether direct retries can fall back to the recently-heard repeater list
+**Usage:**
+- `get direct.retry.heard`
+- `set direct.retry.heard <state>`
+
+**Parameters:**
+- `state`: `on`|`off`
+
+**Default:** `on`
+
+**Note:** When enabled, a repeater can use recently-heard non-duplicate repeater prefixes as a fallback for direct retry eligibility when no suitable neighbor entry is available.
+
+---
+
+#### View or change the SNR margin used for direct retry eligibility
+**Usage:**
+- `get direct.retry.margin`
+- `set direct.retry.margin <value>`
+
+**Parameters:**
+- `value`: Margin in dB above the SF-specific receive floor (minimum `0`, maximum `40`, quarter-dB precision, default `2.5`)
+
+**Default:** `2.5`
+
+**Note:** The retry gate uses the active SF floor of `SF5=-2.5`, `SF6=-5`, `SF7=-7.5`, `SF8=-10`, `SF9=-12.5`, `SF10=-15`, `SF11=-17.5`, `SF12=-20`, then adds this margin.
+
+---
+
+#### View or change the number of direct retry attempts
+**Usage:**
+- `get direct.retry.count`
+- `set direct.retry.count <value>`
+
+**Parameters:**
+- `value`: Retry attempts after initial TX (`1`-`15`)
+
+**Default:** `15`
+
+---
+
+#### View or change the base direct retry wait (milliseconds)
+**Usage:**
+- `get direct.retry.base`
+- `set direct.retry.base <value>`
+
+**Parameters:**
+- `value`: Base wait in milliseconds (`10`-`5000`)
+
+**Default:** `200`
+
+**Note:** The actual first retry wait is `base + computed_echo_wait_from_live_phy`.
 
 ---
 
