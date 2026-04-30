@@ -50,6 +50,7 @@ public:
   uint8_t payload[MAX_PACKET_PAYLOAD];
   int8_t _snr;
   uint8_t hash[MAX_HASH_SIZE];
+  mutable char hash_hex[MAX_HASH_SIZE * 2 + 1];
   uint8_t sending_attempts;
 
   /**
@@ -57,6 +58,8 @@ public:
    * \return  hash pointer
    */
   uint8_t *calculatePacketHash() const;
+
+  const char* getHashHex() const;
 
   /**
    * \returns  one of ROUTE_ values
