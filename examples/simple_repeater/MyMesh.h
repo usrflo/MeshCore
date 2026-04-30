@@ -141,6 +141,7 @@ protected:
 
   uint32_t getRetransmitDelay(const mesh::Packet* packet) override;
   uint32_t getDirectRetransmitDelay(const mesh::Packet* packet) override;
+  bool isNeighbourHash(const uint8_t* hash) const override;
 
   int getInterferenceThreshold() const override {
     return _prefs.interference_threshold;

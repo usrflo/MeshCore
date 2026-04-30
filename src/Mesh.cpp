@@ -117,6 +117,33 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
           }
         }
       }
+
+      // Amplifier backup relay: if the designated next-hop is a known direct neighbor,
+      // schedule a low-priority relay in case that hop fails to forward the packet.
+      // The cancellation checks above will suppress this relay if the hop forwards in time
+      // (provided there is a cross-link that lets us hear the hop's relay).
+      if (allowPacketForward(pkt) &&
+          pkt->getPayloadType() != PAYLOAD_TYPE_ACK &&
+          pkt->getPayloadType() != PAYLOAD_TYPE_MULTIPART &&
+          !_tables->hasSeen(pkt) &&
+          isNeighbourHash(pkt->path)) {
+        // Strip the failing hop's hash from the path so downstream nodes route correctly.
+        // (removeSelfFromPath() removes path[0] regardless of whose hash it is.)
+        removeSelfFromPath(pkt);
+        // Leave sending_attempts = 0 so the outbound cancellation check (which requires
+        // sending_attempts > 0) does NOT suppress this backup when we overhear the
+        // designated hop's relay.  That relay might reach us (via a reliable cross-link)
+        // even if it fails to reach Bob (over a marginal link), and cancelling would
+        // prevent the backup from ever firing.  Bob's hasSeen() will drop the duplicate
+        // if the designated hop already delivered successfully.
+        pkt->sending_attempts = 0;
+        // Delay: allow ~3x airtime for the hop to relay and for its relay to reach us,
+        // plus a 500 ms buffer for processing jitter.
+        uint32_t backup_delay = _radio->getEstAirtimeFor(pkt->getRawLength()) * 3 + 500;
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): amplifier backup relay scheduled (delay=%u ms)",
+                           getLogDateTime(), backup_delay);
+        return ACTION_RETRANSMIT_DELAYED(2, backup_delay);
+      }
     }
 
     // check for 'early received' ACK

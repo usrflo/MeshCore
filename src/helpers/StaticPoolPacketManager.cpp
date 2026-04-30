@@ -78,6 +78,8 @@ mesh::Packet* StaticPoolPacketManager::allocNew() {
 }
 
 void StaticPoolPacketManager::free(mesh::Packet* packet) {
+  memset(packet->hash, 0, MAX_HASH_SIZE);  // clear stale cached hash so calculatePacketHash() recomputes on next use
+  packet->hash_hex[0] = '\0';
   unused.add(packet, 0, 0);
 }
 
