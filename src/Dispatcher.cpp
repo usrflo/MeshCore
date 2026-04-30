@@ -4,6 +4,10 @@
   #include <Arduino.h>
 #endif
 
+#ifdef MESHCORE_SIMULATOR
+  #include "sim_context.h"
+#endif
+
 #include <math.h>
 
 namespace mesh {
@@ -385,7 +389,16 @@ bool Dispatcher::millisHasNowPassed(unsigned long timestamp) const {
 }
 
 unsigned long Dispatcher::futureMillis(int millis_from_now) const {
-  return _ms->getMillis() + millis_from_now;
+  unsigned long wake_time = _ms->getMillis() + millis_from_now;
+
+#ifdef MESHCORE_SIMULATOR
+  // Register wake time with simulator for accurate scheduling
+  if (auto* ctx = SIM_CTX()) {
+    ctx->wake_registry.registerWakeTime(wake_time);
+  }
+#endif
+
+  return wake_time;
 }
 
 }
