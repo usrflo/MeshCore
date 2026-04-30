@@ -96,6 +96,10 @@ int  StaticPoolPacketManager::getOutboundCount(uint32_t now) const {
   return send_queue.countBefore(now);
 }
 
+int  StaticPoolPacketManager::getOutboundCountAll() const {
+  return send_queue.count();
+}
+
 int StaticPoolPacketManager::getFreeCount() const {
   return unused.count();
 }

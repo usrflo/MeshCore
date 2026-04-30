@@ -77,11 +77,13 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
     return ACTION_RELEASE;
   }
 
-  if (pkt->isRouteDirect() && pkt->path_len >= PATH_HASH_SIZE) {
-    const bool is_next_hop = self_id.isHashMatch(pkt->path);
+  if (pkt->isRouteDirect()) {
+    const bool is_next_hop = (pkt->path_len >= PATH_HASH_SIZE) && self_id.isHashMatch(pkt->path);
 
     // Check if this is a retransmit of a packet we recently sent;
-    // if yes, the next hop successfully forwarded it, so remove our scheduled retransmit from outbound queue
+    // if yes, the next hop successfully forwarded it, so remove our scheduled retransmit from outbound queue.
+    // This runs for ANY path_len (including 0 = downstream relay forwarding to final destination),
+    // so that we cancel pending retries as soon as we overhear a relay forwarding our packet.
 
     // Only do this when the packet is NOT addressed to us as next hop to avoid dropping fresh packets.
     if (!is_next_hop) {
@@ -101,8 +103,8 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         }
       }
 
-      if (_mgr->getOutboundCount(_ms->getMillis()) > 0) {
-        for (int i = _mgr->getOutboundCount(_ms->getMillis()) - 1; i >= 0; i--) {
+      if (_mgr->getOutboundCountAll() > 0) {
+        for (int i = _mgr->getOutboundCountAll() - 1; i >= 0; i--) {
           Packet *queued_pkt = _mgr->getOutboundByIdx(i);
           if (queued_pkt && queued_pkt->sending_attempts > 0 && queued_pkt->isRouteDirect()) {
             const uint8_t *queued_hash = queued_pkt->calculatePacketHash();
@@ -118,11 +120,9 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         }
       }
 
-      // Amplifier backup relay: if the designated next-hop is a known direct neighbor,
-      // schedule a low-priority relay in case that hop fails to forward the packet.
-      // The cancellation checks above will suppress this relay if the hop forwards in time
-      // (provided there is a cross-link that lets us hear the hop's relay).
-      if (allowPacketForward(pkt) &&
+      // Amplifier backup relay: only relevant when there is still a path hop to check.
+      if (pkt->path_len >= PATH_HASH_SIZE &&
+          allowPacketForward(pkt) &&
           pkt->getPayloadType() != PAYLOAD_TYPE_ACK &&
           pkt->getPayloadType() != PAYLOAD_TYPE_MULTIPART &&
           !_tables->hasSeen(pkt) &&
@@ -145,6 +145,10 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         return ACTION_RETRANSMIT_DELAYED(2, backup_delay);
       }
     }
+
+    // For path_len=0 direct packets, no further path-based processing applies;
+    // fall through to general switch-case handling (e.g. ACK delivery via onAckRecv).
+    if (pkt->path_len < PATH_HASH_SIZE) goto direct_path_done;
 
     // check for 'early received' ACK
     if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
@@ -179,6 +183,7 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
     return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
   }
 
+direct_path_done:
   if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
 
   DispatcherAction action = ACTION_RELEASE;
