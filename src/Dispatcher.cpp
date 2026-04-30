@@ -80,7 +80,7 @@ void Dispatcher::loop() {
       }
       outbound = NULL;
     } else if (millisHasNowPassed(outbound_expiry)) {
-      MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
+      MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packet %s send timed out!", getLogDateTime(), outbound->getHashHex());
 
       _radio->onSendFinished();
       logTxFail(outbound, 2 + outbound->path_len + outbound->payload_len);
@@ -121,6 +121,9 @@ void Dispatcher::loop() {
 
 void Dispatcher::checkRecv() {
   while (true) {
+    
+    // mem overflow: MESH_DEBUG_PRINTLN("Dispatcher::checkRecv-loop");
+
     Packet *pkt = nullptr;
     float score = 0.0f;
     uint32_t air_time = 0;
@@ -227,6 +230,9 @@ void Dispatcher::checkRecv() {
 }
 
 void Dispatcher::processRecvPacket(Packet* pkt) {
+  
+  MESH_DEBUG_PRINTLN("Dispatcher::processRecvPacket %s", pkt->getHashHex());
+
   DispatcherAction action = onRecvPacket(pkt);
   if (action == ACTION_RELEASE) {
     _mgr->free(pkt);
@@ -241,6 +247,9 @@ void Dispatcher::processRecvPacket(Packet* pkt) {
 }
 
 void Dispatcher::checkSend() {
+
+  // mem overflow: MESH_DEBUG_PRINTLN("Dispatcher::checkSend()");
+
   if (_mgr->getOutboundCount(_ms->getMillis()) == 0) return;  // nothing waiting to send
   if (!millisHasNowPassed(next_tx_time)) return;   // still in 'radio silence' phase (from airtime budget setting)
   if (_radio->isReceiving()) {   // LBT - check if radio is currently mid-receive, or if channel activity
@@ -263,6 +272,9 @@ void Dispatcher::checkSend() {
 
   outbound = _mgr->getNextOutbound(_ms->getMillis());
   if (outbound) {
+
+    MESH_DEBUG_PRINTLN("Dispatcher::checkSend(): prepare to send packet %s", outbound->getHashHex());
+
     int len = 0;
     uint8_t raw[MAX_TRANS_UNIT];
 
@@ -361,11 +373,19 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
   // the final hop will ACK separately, so out-of-scope here
   if (packet->isRouteDirect() && packet->path_len > 0 && packet->sending_attempts < MAX_RESEND_ATTEMPTS) {
     packet->sending_attempts++;
-    // Reschedule with delay allowing intermediate forwarding in multi-hop chains
-    // Apply moderate multiplier for retry spacing
+
+    MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),
+                       packet->sending_attempts);
+
+    // Schedule re-send AFTER the airtime budget silence window ends.
+    // next_tx_time is set to futureMillis(airtime * airtimeBudgetFactor) immediately before
+    // this call, so (next_tx_time - now) is the remaining silence duration.
+    // Adding 100ms jitter after the silence window gives the downstream repeater enough
+    // time to forward the packet and for us to hear the forwarding (and cancel this re-send)
+    // before we actually transmit. This avoids unnecessary retransmissions and collisions.
     uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
-    // uint32_t jitter = _rng->nextInt(50, 150);
-    _mgr->queueOutbound(packet, 1, futureMillis(retransmit_delay * 1.5 + /*TODO: jitter*/100));
+    uint32_t silence_remaining_ms = (uint32_t)(next_tx_time - _ms->getMillis());
+    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_remaining_ms + retransmit_delay + 100)));
     return true;
   }
 

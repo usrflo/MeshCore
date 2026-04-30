@@ -1,4 +1,5 @@
 #include "Packet.h"
+#include "Utils.h"
 #include <string.h>
 #include <SHA256.h>
 
@@ -11,6 +12,7 @@ Packet::Packet() {
   path_len = 0;
   payload_len = 0;
   memcpy(hash, ZERO_HASH, MAX_HASH_SIZE);
+  memset(hash_hex, 0, sizeof(hash_hex));
   sending_attempts = 0;
 }
 
@@ -30,6 +32,12 @@ uint8_t *Packet::calculatePacketHash() const {
     sha.finalize((uint8_t *)this->hash, MAX_HASH_SIZE);
   }
   return (uint8_t *)this->hash;
+}
+
+const char* Packet::getHashHex() const {
+  calculatePacketHash();
+  Utils::toHex(hash_hex, hash, MAX_HASH_SIZE);
+  return hash_hex;
 }
 
 uint8_t Packet::writeTo(uint8_t dest[]) const {

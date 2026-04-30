@@ -143,6 +143,8 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
       if (!_tables->hasSeen(pkt)) {
         removeSelfFromPath(pkt);
 
+        MESH_DEBUG_PRINTLN("Mesh::onRecvPacket(): prepare to repeat packet %s", pkt->getHashHex());
+
         uint32_t d = getDirectRetransmitDelay(pkt);
         return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
       }

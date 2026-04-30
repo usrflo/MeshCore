@@ -51,6 +51,7 @@ public:
           } else {
             _flood_dups++;
           }
+          MESH_DEBUG_PRINTLN("SimpleMeshTables::hasSeen(): packet %s already seen", packet->getHashHex());
           return true;
         }
       }
