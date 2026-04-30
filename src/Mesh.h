@@ -56,6 +56,12 @@ protected:
   virtual bool allowPacketForward(const Packet* packet);
 
   /**
+   * \returns  true if the given hash prefix belongs to a known direct radio neighbor.
+   *           Used by the amplifier backup-relay mechanism. Default returns false.
+   */
+  virtual bool isNeighbourHash(const uint8_t* hash) const { return false; }
+
+  /**
    * \returns  number of milliseconds delay to apply to retransmitting the given packet.
    */
   virtual uint32_t getRetransmitDelay(const Packet* packet) override;
