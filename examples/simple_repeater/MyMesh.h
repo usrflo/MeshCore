@@ -33,6 +33,7 @@
 #include <helpers/StatsFormatHelper.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/RegionMap.h>
+#include <helpers/CorridorCheck.h>
 #include "RateLimiter.h"
 
 #ifdef WITH_BRIDGE
@@ -193,6 +194,9 @@ public:
   }
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
+  void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt,
+                       const CorridorTriple* corridor, uint8_t corridor_count,
+                       uint32_t delay_millis, uint8_t path_hash_size);
 
   // CommonCLICallbacks
   void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) override;

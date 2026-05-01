@@ -447,6 +447,30 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
       return false;
     }
   }
+  // Corridor check (soft-hint): only for TRANSPORT_FLOOD packets carrying a corridor.
+  // Fail-open: if own position is unknown (0,0), always forward.
+  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
+    uint8_t n = getCorridorCount(packet->transport_codes[1]);
+    if (n > 0 && (_prefs.node_lat != 0.0 || _prefs.node_lon != 0.0)) {
+      const uint16_t corridor_bytes = (uint16_t)(n * CORRIDOR_TRIPLE_BYTES);
+      if (packet->payload_len < corridor_bytes) {
+        MESH_DEBUG_PRINTLN("allowPacketForward: corridor_count=%d but payload too short, dropping", n);
+        return false;
+      }
+      const uint8_t* corridor_data = packet->payload + packet->payload_len - corridor_bytes;
+      CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+      for (uint8_t i = 0; i < n; i++) {
+        const uint16_t triple_offset = (uint16_t)(i * CORRIDOR_TRIPLE_BYTES);
+        uint32_t raw;
+        memcpy(&raw, corridor_data + triple_offset, CORRIDOR_TRIPLE_BYTES);
+        decodeCorridorTriple(raw, triples[i]);
+      }
+      if (!isPointInCorridor((float)_prefs.node_lat, (float)_prefs.node_lon, triples, (int)n)) {
+        MESH_DEBUG_PRINTLN("allowPacketForward: position outside corridor, dropping flood");
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -979,6 +1003,16 @@ void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint3
     codes[1] = 0;  // REVISIT: set to 'home' Region, for sender/return region?
     sendFlood(pkt, codes, delay_millis, path_hash_size);
   }
+}
+
+void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt,
+                              const CorridorTriple* corridor, uint8_t corridor_count,
+                              uint32_t delay_millis, uint8_t path_hash_size) {
+  appendCorridorToPacket(pkt, corridor, corridor_count);  // sets pkt->transport_codes[1]
+  uint16_t codes[2];
+  codes[0] = scope.isNull() ? 0 : scope.calcTransportCode(pkt);
+  codes[1] = pkt->transport_codes[1];
+  sendFlood(pkt, codes, delay_millis, path_hash_size);
 }
 
 void MyMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) {

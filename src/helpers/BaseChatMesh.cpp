@@ -16,6 +16,19 @@ void BaseChatMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Pack
   sendFlood(pkt, delay_millis);
 }
 
+void BaseChatMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt,
+                                    const CorridorTriple* corridor, uint8_t corridor_count,
+                                    uint32_t delay_millis) {
+  appendCorridorToPacket(pkt, corridor, corridor_count);
+  sendFlood(pkt, pkt->transport_codes, delay_millis);
+}
+void BaseChatMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt,
+                                    const CorridorTriple* corridor, uint8_t corridor_count,
+                                    uint32_t delay_millis) {
+  appendCorridorToPacket(pkt, corridor, corridor_count);
+  sendFlood(pkt, pkt->transport_codes, delay_millis);
+}
+
 mesh::Packet* BaseChatMesh::createSelfAdvert(const char* name) {
   uint8_t app_data[MAX_ADVERT_DATA_SIZE];
   uint8_t app_data_len;

@@ -47,7 +47,7 @@ This is the protocol level packet structure used in MeshCore firmware v1.12.0
 - `transport_codes` - 4 bytes (optional)
     - Only present for `ROUTE_TYPE_TRANSPORT_FLOOD` and `ROUTE_TYPE_TRANSPORT_DIRECT`
     - `transport_code_1` - 2 bytes - `uint16_t` - calculated from region scope
-    - `transport_code_2` - 2 bytes - `uint16_t` - reserved
+    - `transport_code_2` - 2 bytes - `uint16_t` - [Corridor Extension header](#corridor-extension) (bits 15-12 = N, bits 11-0 = reserved/0); 0 means no corridor
 - `path_length` - 1 byte - Encoded path metadata
     - Bits 0-5 store path hash count / hop count (`0-63`)
     - Bits 6-7 store path hash size minus 1
@@ -150,3 +150,65 @@ Examples:
 | `0x01` | 2       | Future version (e.g., 2-byte hashes, 4-byte MAC) |
 | `0x02` | 3       | Future version                                   |
 | `0x03` | 4       | Future version                                   |
+
+### Corridor Extension
+
+A geo-corridor can be embedded in `ROUTE_TYPE_TRANSPORT_FLOOD` packets to allow
+corridor-aware repeaters to selectively forward based on their own position.
+Corridor-unaware repeaters (which ignore `transport_code_2`) continue to forward
+unconditionally — the extension is fully backward-compatible (soft-hint only).
+
+See `src/helpers/CorridorCheck.h` for the reference implementation.
+
+#### transport_codes[1] (transport_code_2) Layout
+
+| Bits  | Field | Description |
+|-------|-------|-------------|
+| 15–12 | N     | Number of corridor triples appended at end of payload (0 = no corridor, 1–8 = triples present, 9–15 reserved) |
+| 11–0  | —     | Reserved, must be 0 |
+
+#### Corridor Triple Encoding
+
+Each triple is 4 bytes and is appended **after** the typed payload content.
+The `payload` field therefore contains `payload_content` followed by `N × 4` corridor bytes.
+
+```
+Bits 31–18  lat_encoded   14-bit offset-binary: round((lat + 90) / 180 × 16383)
+Bits 17–4   lon_encoded   14-bit offset-binary: round((lon + 180) / 360 × 16383)
+Bits 3–0    radius_code   4-bit index into radius table
+```
+
+Precision: ≈1.2 km latitude, ≈2.4 km longitude at the equator (improves toward higher latitudes).
+
+#### Radius Code Table
+
+| Code | km  | Code | km  | Code | km  | Code | km        |
+|------|-----|------|-----|------|-----|------|-----------|
+| 0    | 1   | 4    | 8   | 8    | 50  | 12   | 300       |
+| 1    | 2   | 5    | 12  | 9    | 80  | 13   | 500       |
+| 2    | 3   | 6    | 20  | 10   | 120 | 14   | 800       |
+| 3    | 5   | 7    | 30  | 11   | 200 | 15   | unlimited |
+
+Code 15 marks an anchor point with no radius constraint (the repeater check treats it as always-inside).
+
+#### Corridor Check Algorithm
+
+A corridor is the union of N circles connected by their convex hull along the path.
+A repeater is inside the corridor if its position lies within any circle or within
+the capsule-shaped region between two consecutive circles. The radius interpolates
+linearly along each segment. A cos(latitude) correction is applied so that
+longitude distances are scaled correctly at all latitudes.
+
+Fail-open rules:
+- N = 0 → no corridor defined, always forward
+- Own position unknown (lat = 0, lon = 0) → always forward
+- A triple with radius_code = 15 (unlimited) → always inside for that anchor
+
+#### Payload Budget with Corridor
+
+| N (triples) | Corridor overhead | Max payload content |
+|-------------|-------------------|--------------------|
+| 0           | 0 B               | 184 B              |
+| 1           | 4 B               | 180 B              |
+| 4           | 16 B              | 168 B              |
+| 8 (max)     | 32 B              | 152 B              |

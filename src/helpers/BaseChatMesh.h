@@ -3,6 +3,7 @@
 #include <Arduino.h>   // needed for PlatformIO
 #include <Mesh.h>
 #include <helpers/AdvertDataHelpers.h>
+#include <helpers/CorridorCheck.h>
 #include <helpers/TxtDataHelpers.h>
 
 #define MAX_TEXT_LEN    (10*CIPHER_BLOCK_SIZE)  // must be LESS than (MAX_PACKET_PAYLOAD - 4 - CIPHER_MAC_SIZE - 1)
@@ -119,6 +120,12 @@ protected:
 
   virtual void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0);
   virtual void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0);
+  virtual void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt,
+                               const CorridorTriple* corridor, uint8_t corridor_count,
+                               uint32_t delay_millis=0);
+  virtual void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt,
+                               const CorridorTriple* corridor, uint8_t corridor_count,
+                               uint32_t delay_millis=0);
 
   // storage concepts, for sub-classes to override/implement
   virtual int  getBlobByKey(const uint8_t key[], int key_len, uint8_t dest_buf[]) { return 0; }  // not implemented
