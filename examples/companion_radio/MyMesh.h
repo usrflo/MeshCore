@@ -115,6 +115,12 @@ protected:
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis);
   void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0) override;
   void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0) override;
+  void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt,
+                       const CorridorTriple* corridor, uint8_t corridor_count,
+                       uint32_t delay_millis=0) override;
+  void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt,
+                       const CorridorTriple* corridor, uint8_t corridor_count,
+                       uint32_t delay_millis=0) override;
 
   void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;
   bool isAutoAddEnabled() const override;

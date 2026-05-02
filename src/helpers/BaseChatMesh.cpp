@@ -494,6 +494,28 @@ bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel& chan
   return false;
 }
 
+bool BaseChatMesh::sendGroupMessageWithCorridor(uint32_t timestamp, mesh::GroupChannel& channel, const char* sender_name, const char* text, int text_len,
+                                                 const CorridorTriple* corridor, uint8_t corridor_count) {
+  uint8_t temp[5+MAX_TEXT_LEN+32];
+  memcpy(temp, &timestamp, 4);
+  temp[4] = 0;  // TXT_TYPE_PLAIN
+
+  sprintf((char *) &temp[5], "%s: ", sender_name);
+  char *ep = strchr((char *) &temp[5], 0);
+  int prefix_len = ep - (char *) &temp[5];
+
+  if (text_len + prefix_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN - prefix_len;
+  memcpy(ep, text, text_len);
+  ep[text_len] = 0;
+
+  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel, temp, 5 + prefix_len + text_len);
+  if (pkt) {
+    sendFloodScoped(channel, pkt, corridor, corridor_count);
+    return true;
+  }
+  return false;
+}
+
 bool BaseChatMesh::sendGroupData(mesh::GroupChannel& channel, uint8_t* path, uint8_t path_len, uint16_t data_type, const uint8_t* data, int data_len) {
   if (data_len < 0) {
     MESH_DEBUG_PRINTLN("sendGroupData: invalid negative data_len=%d", data_len);
@@ -793,7 +815,7 @@ void BaseChatMesh::resetPathTo(ContactInfo& recipient) {
   recipient.out_path_len = OUT_PATH_UNKNOWN;
 }
 
-static ContactInfo* table;  // pass via global :-(
+static thread_local ContactInfo* table;  // pass via global (thread_local for simulation)
 
 static int cmp_adv_timestamp(const void *a, const void *b) {
   int a_idx = *((int *)a);

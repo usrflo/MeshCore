@@ -430,8 +430,15 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   if (_prefs.disable_fwd) return false;
   if (packet->isRouteFlood() && packet->getPathHashCount() >= _prefs.flood_max) return false;
   if (packet->isRouteFlood() && recv_pkt_region == NULL) {
-    MESH_DEBUG_PRINTLN("allowPacketForward: unknown transport code, or wildcard not allowed for FLOOD packet");
-    return false;
+    // Special case: TRANSPORT_FLOOD with corridor data but unknown transport scope.
+    // The corridor check below will decide whether to forward based on geography.
+    // Only bail out if no corridor is present (the standard unknown-scope check).
+    bool has_corridor = (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD)
+                     && (getCorridorCount(packet->transport_codes[1]) > 0);
+    if (!has_corridor) {
+      MESH_DEBUG_PRINTLN("allowPacketForward: unknown transport code, or wildcard not allowed for FLOOD packet");
+      return false;
+    }
   }
   if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
     const uint8_t* maximums;

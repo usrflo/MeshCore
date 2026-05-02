@@ -21,7 +21,7 @@
 #define MAX_PATH_SIZE        64
 #define MAX_TRANS_UNIT      255
 
-#if MESH_DEBUG && ARDUINO
+#if (MESH_DEBUG && ARDUINO) || defined(MESHCORE_SIMULATOR)
   #include <Arduino.h>
   #define MESH_DEBUG_PRINT(F, ...) Serial.printf("DEBUG: " F, ##__VA_ARGS__)
   #define MESH_DEBUG_PRINTLN(F, ...) Serial.printf("DEBUG: " F "\n", ##__VA_ARGS__)

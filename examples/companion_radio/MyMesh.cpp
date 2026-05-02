@@ -2,6 +2,7 @@
 
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
+#include <helpers/CorridorCheck.h>
 
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
@@ -61,6 +62,7 @@
 #define CMD_SEND_CHANNEL_DATA         62
 #define CMD_SET_DEFAULT_FLOOD_SCOPE   63
 #define CMD_GET_DEFAULT_FLOOD_SCOPE   64
+#define CMD_SEND_CHANNEL_TXT_MSG_CORRIDOR  65   // simulator extension: channel msg with geo-corridor
 
 // Stats sub-types for CMD_GET_STATS
 #define STATS_TYPE_CORE               0
@@ -508,6 +510,42 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 
   auto scope = send_scope.isNull() ? &default_scope : &send_scope;
   sendFloodScoped(*scope, pkt, delay_millis);
+}
+
+void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt,
+                              const CorridorTriple* corridor, uint8_t corridor_count,
+                              uint32_t delay_millis) {
+  appendCorridorToPacket(pkt, corridor, corridor_count);
+  // Resolve the send scope the same way the non-corridor variant does.
+  TransportKey default_scope;
+  memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
+  const TransportKey* scope = send_scope.isNull() ? &default_scope : &send_scope;
+  // Corridor packets MUST use TRANSPORT_FLOOD so that transport_codes[1] (carrying the
+  // corridor count) is serialised over the air.  If no scope key is configured, use a
+  // null transport code (0 is reserved, so bump to 1) as a corridor-only pseudo-scope.
+  // Corridor-aware repeaters accept this and apply the geographic filter instead.
+  uint16_t codes[2];
+  codes[0] = scope->isNull() ? 1 : scope->calcTransportCode(pkt);
+  codes[1] = pkt->transport_codes[1];  // corridor count + reserved bits
+  sendFlood(pkt, codes, delay_millis, _prefs.path_hash_mode + 1);
+}
+
+void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt,
+                              const CorridorTriple* corridor, uint8_t corridor_count,
+                              uint32_t delay_millis) {
+  appendCorridorToPacket(pkt, corridor, corridor_count);
+  // Resolve the send scope the same way the non-corridor channel variant does.
+  TransportKey default_scope;
+  memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
+  const TransportKey* scope = send_scope.isNull() ? &default_scope : &send_scope;
+  // Corridor packets MUST use TRANSPORT_FLOOD so that transport_codes[1] (carrying the
+  // corridor count) is serialised over the air.  If no scope key is configured, use a
+  // null transport code (0 is reserved, so bump to 1) as a corridor-only pseudo-scope.
+  // Corridor-aware repeaters accept this and apply the geographic filter instead.
+  uint16_t codes[2];
+  codes[0] = scope->isNull() ? 1 : scope->calcTransportCode(pkt);
+  codes[1] = pkt->transport_codes[1];  // corridor count + reserved bits
+  sendFlood(pkt, codes, delay_millis, _prefs.path_hash_mode + 1);
 }
 
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
@@ -1118,6 +1156,58 @@ void MyMesh::handleCmdFrame(size_t len) {
         writeOKFrame();
       } else {
         writeErrFrame(ERR_CODE_NOT_FOUND); // bad channel_idx
+      }
+    }
+  } else if (cmd_frame[0] == CMD_SEND_CHANNEL_TXT_MSG_CORRIDOR) { // send GroupChannel text msg with geo-corridor
+    int i = 1;
+    uint8_t txt_type = cmd_frame[i++];
+    uint8_t channel_idx = cmd_frame[i++];
+    uint32_t msg_timestamp;
+    memcpy(&msg_timestamp, &cmd_frame[i], 4);
+    i += 4;
+    // Text runs until the count byte at end
+    // Wire format (after timestamp): text_bytes... | count(1) | triple0(4) ... tripleN-1(4)
+    // Find count byte: walk from end
+    if ((int)len <= i) {
+      writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+      return;
+    }
+    uint8_t n_triples = cmd_frame[len - 1];
+    if (n_triples > MAX_CORRIDOR_TRIPLES) {
+      writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+      return;
+    }
+    // Length of triple data + count byte
+    int trailer_len = 1 + (int)n_triples * CORRIDOR_TRIPLE_BYTES;
+    int text_len = (int)len - i - trailer_len;
+    if (text_len < 0 || txt_type != TXT_TYPE_PLAIN) {
+      writeErrFrame(ERR_CODE_UNSUPPORTED_CMD);
+      return;
+    }
+    const char *text = (const char *)&cmd_frame[i];
+    // Decode corridor triples
+    // Wire format: cmd | type | ch | timestamp(4) | text | triple0(4) | ... | tripleN-1(4) | count(1)
+    CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+    const uint8_t *triple_data = &cmd_frame[i + text_len]; // triples immediately follow text
+    for (int t = 0; t < (int)n_triples; t++) {
+      uint32_t word;
+      memcpy(&word, triple_data + t * CORRIDOR_TRIPLE_BYTES, 4);
+      decodeCorridorTriple(word, triples[t]);
+    }
+    // Build and send group message with corridor appended
+    {
+      ChannelDetails channel_details;
+      bool success = getChannel(channel_idx, channel_details);
+      if (!success) {
+        writeErrFrame(ERR_CODE_NOT_FOUND);
+        return;
+      }
+      // Build the message packet the same way sendGroupMessage does, then append corridor
+      if (sendGroupMessageWithCorridor(msg_timestamp, channel_details.channel, _prefs.node_name, text, text_len,
+                                       triples, n_triples)) {
+        writeOKFrame();
+      } else {
+        writeErrFrame(ERR_CODE_NOT_FOUND);
       }
     }
   } else if (cmd_frame[0] == CMD_SEND_CHANNEL_DATA) { // send GroupChannel datagram

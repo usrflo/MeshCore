@@ -106,8 +106,43 @@ inline uint16_t makeCorridorHeader(uint8_t n) {
 }
 
 /**
+ * Find the exact radius code for a given radius in km.
+ *
+ * Returns true and sets *code_out if radius_km exactly matches (within 0.001 km)
+ * one of the 16 supported values.  When no exact match is found, sets *lower_out
+ * and *upper_out to the nearest supported values below / above (FLT_MAX when
+ * no bound exists on that side) and returns false.
+ */
+inline bool findExactRadiusCode(float radius_km,
+                                 uint8_t* code_out,
+                                 float*   lower_out = nullptr,
+                                 float*   upper_out = nullptr) {
+    for (uint8_t r = 0; r < 16; r++) {
+        float tabval = CORRIDOR_RADIUS_KM[r];
+        bool match = (tabval >= 3.4e38f)                      // unlimited sentinel
+                     ? (radius_km >= 3.4e38f)
+                     : (fabsf(radius_km - tabval) < 0.001f);
+        if (match) {
+            if (code_out) *code_out = r;
+            return true;
+        }
+    }
+    // Collect nearest lower (largest table value < radius_km, excluding unlimited)
+    float lo = -1.0f;
+    float hi = -1.0f;
+    for (uint8_t r = 0; r < 15; r++) {  // skip index 15 (unlimited)
+        float tabval = CORRIDOR_RADIUS_KM[r];
+        if (tabval < radius_km && (lo < 0.0f || tabval > lo)) lo = tabval;
+        if (tabval > radius_km && (hi < 0.0f || tabval < hi)) hi = tabval;
+    }
+    if (lower_out) *lower_out = (lo >= 0.0f) ? lo : -3.4028235e+38f;  // -FLT_MAX when no bound below
+    if (upper_out) *upper_out = (hi >= 0.0f) ? hi : 3.4028235e+38f;   // FLT_MAX when no bound above
+    return false;
+}
+
+/**
  * Look up radius in km for a given 4-bit code.
- * Returns FLT_MAX for code 15 (unlimited).
+ * Returns FLT_MAX equivalent for code 15 (unlimited).
  */
 inline float radiusCodeToKm(uint8_t code) {
     return CORRIDOR_RADIUS_KM[code & 0x0F];
@@ -240,10 +275,27 @@ inline bool appendCorridorToPacket(mesh::Packet* pkt,
 
     uint8_t* dst = pkt->payload + pkt->payload_len;
     for (uint8_t i = 0; i < n; i++) {
-        // Find the smallest table entry whose radius covers corridor[i].radius_km.
-        uint8_t radius_code = 15;  // default: unlimited
-        for (uint8_t r = 0; r < 15; r++) {
-            if (CORRIDOR_RADIUS_KM[r] >= corridor[i].radius_km) { radius_code = r; break; }
+        uint8_t radius_code;
+        float lower_bound, upper_bound;
+        if (!findExactRadiusCode(corridor[i].radius_km, &radius_code, &lower_bound, &upper_bound)) {
+            // Radius is not in the supported set — log an error and abort.
+            if (lower_bound >= 0.0f && upper_bound >= 0.0f) {
+                MESH_DEBUG_PRINTLN("appendCorridorToPacket: unsupported radius %.3f km. "
+                                   "Nearest supported: lower=%.0f km, upper=%.0f km.",
+                                   corridor[i].radius_km, lower_bound, upper_bound);
+            } else if (lower_bound >= 0.0f) {
+                MESH_DEBUG_PRINTLN("appendCorridorToPacket: unsupported radius %.3f km. "
+                                   "Nearest supported lower: %.0f km. Above that is unlimited.",
+                                   corridor[i].radius_km, lower_bound);
+            } else if (upper_bound >= 0.0f) {
+                MESH_DEBUG_PRINTLN("appendCorridorToPacket: unsupported radius %.3f km. "
+                                   "Nearest supported upper: %.0f km. No smaller value exists.",
+                                   corridor[i].radius_km, upper_bound);
+            } else {
+                MESH_DEBUG_PRINTLN("appendCorridorToPacket: unsupported radius %.3f km.",
+                                   corridor[i].radius_km);
+            }
+            return false;
         }
         uint32_t encoded = encodeCorridorTriple(corridor[i].lat, corridor[i].lon, radius_code);
         memcpy(dst, &encoded, CORRIDOR_TRIPLE_BYTES);
