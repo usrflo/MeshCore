@@ -479,15 +479,19 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
     MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),
                        packet->sending_attempts);
 
-    // Schedule re-send AFTER the airtime budget silence window ends.
-    // next_tx_time is set to futureMillis(airtime * airtimeBudgetFactor) immediately before
-    // this call, so (next_tx_time - now) is the remaining silence duration.
-    // Adding 100ms jitter after the silence window gives the downstream repeater enough
-    // time to forward the packet and for us to hear the forwarding (and cancel this re-send)
-    // before we actually transmit. This avoids unnecessary retransmissions and collisions.
+    // Schedule re-send after the equivalent post-TX airtime silence has elapsed.
+    // Previously we derived this from (next_tx_time - now), but the new tx-budget system
+    // sets next_tx_time = now whenever the budget is healthy (which is almost always the
+    // case in short simulations / early in real device uptime), making silence_remaining_ms
+    // effectively 0. Instead we compute the silence directly from the packet's estimated
+    // airtime × budget factor — the same amount the old system enforced unconditionally.
+    // Adding 100ms jitter on top gives the downstream repeater enough time to forward the
+    // packet, and for us to hear that forwarding (and cancel this re-send) before we
+    // actually transmit. This avoids unnecessary retransmissions and collisions.
     uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
-    uint32_t silence_remaining_ms = (uint32_t)(next_tx_time - _ms->getMillis());
-    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_remaining_ms + retransmit_delay + 100)));
+    uint32_t packet_airtime_ms = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
+    uint32_t silence_ms = (uint32_t)(packet_airtime_ms * getAirtimeBudgetFactor());
+    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_ms + retransmit_delay + 100)));
     return true;
   }
 
