@@ -110,8 +110,6 @@ typedef uint32_t  DispatcherAction;
 #define ERR_EVENT_CAD_TIMEOUT       (1 << 1)
 #define ERR_EVENT_STARTRX_TIMEOUT   (1 << 2)
 
-#define MAX_RESEND_ATTEMPTS      (2)
-
 /**
  * \brief  The low-level task that manages detecting incoming Packets, and the queueing
  *      and scheduling of outbound Packets.
@@ -174,6 +172,11 @@ protected:
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
   virtual int getAGCResetInterval() const { return 0; }    // disabled by default
   virtual unsigned long getDutyCycleWindowMs() const { return 3600000; }
+
+  /**
+   * \returns  maximum number of direct-route resend attempts (0 = disabled, default = 2, max = 5).
+   */
+  virtual uint8_t getMaxResendAttempts() const { return 2; }
 
 public:
   void begin();

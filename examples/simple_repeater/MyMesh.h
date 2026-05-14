@@ -156,6 +156,9 @@ protected:
   uint8_t getExtraAckTransmitCount() const override {
     return _prefs.multi_acks;
   }
+  uint8_t getMaxResendAttempts() const override {
+    return _prefs.max_resend_attempts;
+  }
 
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {

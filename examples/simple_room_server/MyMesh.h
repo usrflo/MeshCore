@@ -150,6 +150,9 @@ protected:
   uint8_t getExtraAckTransmitCount() const override {
     return _prefs.multi_acks;
   }
+  uint8_t getMaxResendAttempts() const override {
+    return _prefs.max_resend_attempts;
+  }
 
   bool filterRecvFloodPacket(mesh::Packet* pkt) override;
 

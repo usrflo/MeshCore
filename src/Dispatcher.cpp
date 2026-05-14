@@ -473,7 +473,7 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
   // prepare error correction via potential retransmit:
   // re-send only direct routed packets, with remaining path hops whose retransmits can be recognized;
   // the final hop will ACK separately, so out-of-scope here
-  if (packet->isRouteDirect() && packet->path_len > 0 && packet->sending_attempts < MAX_RESEND_ATTEMPTS) {
+  if (packet->isRouteDirect() && packet->path_len > 0 && packet->sending_attempts < getMaxResendAttempts()) {
     packet->sending_attempts++;
 
     MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),
