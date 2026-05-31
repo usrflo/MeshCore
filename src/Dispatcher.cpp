@@ -213,112 +213,61 @@ void Dispatcher::checkRecv() {
       break;
     }
 
-      logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
+    logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
 
-      pkt = _mgr->allocNew();
-      if (pkt == NULL) {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
-      } else {
-        if (tryParsePacket(pkt, raw, len)) {
-          pkt->_snr = _radio->getLastSNR() * 4.0f;
-          score = _radio->packetScore(_radio->getLastSNR(), len);
-          air_time = _radio->getEstAirtimeFor(len);
-          rx_air_time += air_time;
-        } else {
-          _mgr->free(pkt);  // put back into pool
-          pkt = NULL;
-        }
-      }
+    pkt = _mgr->allocNew();
+    if (pkt == NULL) {
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
+      continue;
+    }
+
+    if (tryParsePacket(pkt, raw, len)) {
+      pkt->_snr = _radio->getLastSNR() * 4.0f;
+      score = _radio->packetScore(_radio->getLastSNR(), len);
+      air_time = _radio->getEstAirtimeFor(len);
+      rx_air_time += air_time;
     } else {
+      _mgr->free(pkt);  // put back into pool
       pkt = NULL;
     }
-  }
-      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!",
-                         getLogDateTime());
-      continue;
-    }
 
-        int i = 0;
-#ifdef NODE_ID
-        uint8_t sender_id = raw[i++];
-        if (sender_id == NODE_ID - 1 || sender_id == NODE_ID + 1) {  // simulate that NODE_ID can only hear NODE_ID-1 or NODE_ID+1, eg. 3 can't hear 1
-        } else {
-      _mgr->free(pkt); // put back into pool
-      continue;
-        }
-#endif
-
-        pkt->header = raw[i++];
-        if (pkt->hasTransportCodes()) {
-          memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
-          memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
-        } else {
-          pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
-        }
-        pkt->path_len = raw[i++];
-
-        if (pkt->path_len > MAX_PATH_SIZE || i + pkt->path_len > len) {
-      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): partial or corrupt packet received, len=%d",
-                         getLogDateTime(), len);
-      _mgr->free(pkt); // put back into pool
-      continue;
-    }
-
-    memcpy(pkt->path, &raw[i], pkt->path_len);
-    i += pkt->path_len;
-
-          pkt->payload_len = len - i;  // payload is remainder
-          if (pkt->payload_len > sizeof(pkt->payload)) {
-      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d",
-                         getLogDateTime(), (uint32_t)pkt->payload_len);
-      _mgr->free(pkt); // put back into pool
-      continue;
-    }
-
-            memcpy(pkt->payload, &raw[i], pkt->payload_len);
-
-            pkt->_snr = _radio->getLastSNR() * 4.0f;
-            score = _radio->packetScore(_radio->getLastSNR(), len);
-            air_time = _radio->getEstAirtimeFor(len);
-            rx_air_time += air_time;
-
-  if (pkt) {
+    if (pkt) {
 #if MESH_PACKET_LOGGING
-    Serial.print(getLogDateTime());
-    Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d",
-            pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
-            (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
+      Serial.print(getLogDateTime());
+      Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d",
+              pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
+              (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
-    pkt->calculatePacketHash();
-    Serial.print(" hash=");
-    mesh::Utils::printHex(Serial, pkt->hash, MAX_HASH_SIZE);
+      pkt->calculatePacketHash();
+      Serial.print(" hash=");
+      mesh::Utils::printHex(Serial, pkt->hash, MAX_HASH_SIZE);
 
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ
-        || pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
-      Serial.printf(" [%02X -> %02X]\n", (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
-    } else {
-      Serial.printf("\n");
-    }
-#endif
-    logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
-
-    if (pkt->isRouteFlood()) {
-      n_recv_flood++;
-
-      int _delay = calcRxDelay(score, air_time);
-      if (_delay < 50) {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay below threshold (%d)", getLogDateTime(), _delay);
-        processRecvPacket(pkt);   // is below the score delay threshold, so process immediately
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ
+          || pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
+        Serial.printf(" [%02X -> %02X]\n", (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
       } else {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay is: %d millis", getLogDateTime(), _delay);
-        if (_delay > MAX_RX_DELAY_MILLIS) {
-          _delay = MAX_RX_DELAY_MILLIS;
-        }
-        _mgr->queueInbound(pkt, futureMillis(_delay)); // add to delayed inbound queue
+        Serial.printf("\n");
       }
-    } else {
-      n_recv_direct++;
-      processRecvPacket(pkt);
+#endif
+      logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
+
+      if (pkt->isRouteFlood()) {
+        n_recv_flood++;
+
+        int _delay = calcRxDelay(score, air_time);
+        if (_delay < 50) {
+          MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay below threshold (%d)", getLogDateTime(), _delay);
+          processRecvPacket(pkt);   // is below the score delay threshold, so process immediately
+        } else {
+          MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay is: %d millis", getLogDateTime(), _delay);
+          if (_delay > MAX_RX_DELAY_MILLIS) {
+            _delay = MAX_RX_DELAY_MILLIS;
+          }
+          _mgr->queueInbound(pkt, futureMillis(_delay)); // add to delayed inbound queue
+        }
+      } else {
+        n_recv_direct++;
+        processRecvPacket(pkt);
       }
     }
   }

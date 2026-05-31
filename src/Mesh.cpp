@@ -233,55 +233,6 @@ direct_path_done:
       }
       break;
     }
-    case PAYLOAD_TYPE_ANON_REQ: {
-      int i = 0;
-      uint8_t dest_hash = pkt->payload[i++];
-      uint8_t* sender_pub_key = &pkt->payload[i]; i += PUB_KEY_SIZE;
-
-      uint8_t* macAndData = &pkt->payload[i];   // MAC + encrypted data 
-      if (i + 2 >= pkt->payload_len) {
-        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
-      } else if (!_tables->hasSeen(pkt)) {
-        if (self_id.isHashMatch(&dest_hash)) {
-          Identity sender(sender_pub_key);
-          uint8_t secret[PUB_KEY_SIZE];
-          getPeerSharedSecret(secret, j);
-
-          // decrypt, checking MAC is valid
-          uint8_t data[MAX_PACKET_PAYLOAD];
-          int len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
-            if (len > 0) {  // success!
-            if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH) {
-              int k = 0;
-              uint8_t path_len = data[k++];
-                uint8_t* path = &data[k]; k += path_len;
-                uint8_t extra_type = data[k++] & 0x0F;   // upper 4 bits reserved for future use
-                uint8_t* extra = &data[k];
-                uint8_t extra_len = len - k;   // remainder of packet (may be padded with zeroes!)
-              if (onPeerPathRecv(pkt, j, secret, path, path_len, extra_type, extra, extra_len)) {
-                if (pkt->isRouteFlood()) {
-                  // send a reciprocal return path to sender, but send DIRECTLY!
-                    mesh::Packet* rpath = createPathReturn(&src_hash, secret, pkt->path, pkt->path_len, 0, NULL, 0);
-                  if (rpath) sendDirect(rpath, path, path_len, 500);
-                }
-              }
-            } else {
-              onPeerDataRecv(pkt, pkt->getPayloadType(), j, secret, data, len);
-            }
-            found = true;
-            break;
-          }
-        }
-        if (found) {
-            pkt->markDoNotRetransmit();  // packet was for this node, so don't retransmit
-        } else {
-          MESH_DEBUG_PRINTLN("%s recv matches no peers, src_hash=%02X", getLogDateTime(), (uint32_t)src_hash);
-        }
-      }
-      action = routeRecvPacket(pkt);
-    }
-    break;
-  }
   case PAYLOAD_TYPE_ANON_REQ: {
     int i = 0;
     uint8_t dest_hash = pkt->payload[i++];
