@@ -11,13 +11,12 @@ MeshCore Companion firmware retransmits a direct message (DM) up to three times 
 no ACK has been received.  The retry is cancelled early if Alice hears any repeater
 forwarding her DM (proving delivery along the path).
 
-Three firmware changes were required to make this work correctly:
+Two firmware changes were required to make this work correctly:
 
 | # | File | Change |
 |---|------|--------|
-| 1 | `src/helpers/StaticPoolPacketManager.cpp` | `getOutboundCountAll()` — counts *all* queued retries, including future-scheduled ones (not just those due *now*) |
-| 2 | `src/Mesh.cpp` | Retry-cancellation block moved outside the `path_len >= PATH_HASH_SIZE` guard, so it also fires when the forwarded packet carries `path_len == 0` |
-| 3 | `examples/companion_radio/MyMesh.cpp` | `getDirectRetransmitDelay()` returns `path_len × 300 ms`, giving every hop time to forward before the next TX is scheduled |
+| 1 | `src/Mesh.cpp` | Retry-cancellation block moved outside the `path_len >= PATH_HASH_SIZE` guard, so it also fires when the forwarded packet carries `path_len == 0` |
+| 2 | `examples/companion_radio/MyMesh.cpp` | `getDirectRetransmitDelay()` returns `path_len × 300 ms`, giving every hop time to forward before the next TX is scheduled |
 
 ---
 
@@ -164,6 +163,5 @@ would be **~66 %** — 29 percentage points below the measured 95 %.
 |------|---------|
 | `examples/topologies/retry_showcase.yaml` | 3-hop marginal topology (this test) |
 | `examples/behaviors/retry_stress.yaml` | 20-DM workload, 10 s interval, 90 s warmup |
-| `src/helpers/StaticPoolPacketManager.cpp` | `getOutboundCountAll()` fix |
 | `src/Mesh.cpp` | Retry-cancellation guard fix |
 | `examples/companion_radio/MyMesh.cpp` | `getDirectRetransmitDelay()` implementation |

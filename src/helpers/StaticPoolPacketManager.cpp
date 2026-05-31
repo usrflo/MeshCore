@@ -105,10 +105,6 @@ int  StaticPoolPacketManager::getOutboundTotal() const {
   return send_queue.count();
 }
 
-int  StaticPoolPacketManager::getOutboundCountAll() const {
-  return send_queue.count();
-}
-
 int StaticPoolPacketManager::getFreeCount() const {
   return unused.count();
 }

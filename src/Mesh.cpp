@@ -97,8 +97,8 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         }
       }
 
-      if (_mgr->getOutboundCountAll() > 0) {
-        for (int i = _mgr->getOutboundCountAll() - 1; i >= 0; i--) {
+      if (_mgr->getOutboundTotal() > 0) {
+        for (int i = _mgr->getOutboundTotal() - 1; i >= 0; i--) {
           Packet *queued_pkt = _mgr->getOutboundByIdx(i);
           if (queued_pkt && queued_pkt->sending_attempts > 0 && queued_pkt->isRouteDirect()) {
             const uint8_t *queued_hash = queued_pkt->calculatePacketHash();
