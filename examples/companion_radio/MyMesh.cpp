@@ -258,15 +258,6 @@ float MyMesh::getAirtimeBudgetFactor() const {
   return _prefs.airtime_factor;
 }
 
-uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
-  // Wait long enough for the relay to finish forwarding the packet so that we can
-  // hear its copy and cancel the retry (via onRecvPacket's cancellation check).
-  // The relay's worst-case forwarding time = its airtime budget silence (up to 2*airtime
-  // for a budget factor of 2.0) plus its own random TX delay + its TX airtime.
-  // Empirically ~300ms per relay hop gives reliable cancellation.
-  if (packet->path_len == 0) return 0;   // final hop, no relay to wait for
-  return (uint32_t)packet->path_len * 300;
-}
 
 int MyMesh::getInterferenceThreshold() const {
   return 0; // disabled for now, until currentRSSI() problem is resolved
@@ -279,6 +270,11 @@ int MyMesh::calcRxDelay(float score, uint32_t air_time) const {
 
 uint32_t MyMesh::getRetransmitDelay(const mesh::Packet *packet) {
   uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * 0.5f);
+  return getRNG()->nextInt(0, 5*t + 1);
+}
+
+uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
+  uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * 0.2f);
   return getRNG()->nextInt(0, 5*t + 1);
 }
 

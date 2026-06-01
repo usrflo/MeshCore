@@ -11,12 +11,11 @@ MeshCore Companion firmware retransmits a direct message (DM) up to three times 
 no ACK has been received.  The retry is cancelled early if Alice hears any repeater
 forwarding her DM (proving delivery along the path).
 
-Two firmware changes were required to make this work correctly:
+One firmware changes was required to make this work correctly:
 
 | # | File | Change |
 |---|------|--------|
 | 1 | `src/Mesh.cpp` | Retry-cancellation block moved outside the `path_len >= PATH_HASH_SIZE` guard, so it also fires when the forwarded packet carries `path_len == 0` |
-| 2 | `examples/companion_radio/MyMesh.cpp` | `getDirectRetransmitDelay()` returns `path_len × 300 ms`, giving every hop time to forward before the next TX is scheduled |
 
 ---
 
