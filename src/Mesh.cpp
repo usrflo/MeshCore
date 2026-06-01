@@ -159,32 +159,32 @@ direct_path_done:
   DispatcherAction action = ACTION_RELEASE;
 
   switch (pkt->getPayloadType()) {
-  case PAYLOAD_TYPE_ACK: {
-    int i = 0;
-    uint32_t ack_crc;
-    memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
-    if (i > pkt->payload_len) {
-      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete ACK packet", getLogDateTime());
-    } else if (!_tables->hasSeen(pkt)) {
-      onAckRecv(pkt, ack_crc);
-      action = routeRecvPacket(pkt);
+    case PAYLOAD_TYPE_ACK: {
+      int i = 0;
+      uint32_t ack_crc;
+      memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
+      if (i > pkt->payload_len) {
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete ACK packet", getLogDateTime());
+      } else if (!_tables->hasSeen(pkt)) {
+        onAckRecv(pkt, ack_crc);
+        action = routeRecvPacket(pkt);
+      }
+      break;
     }
-    break;
-  }
-  case PAYLOAD_TYPE_PATH:
-  case PAYLOAD_TYPE_REQ:
-  case PAYLOAD_TYPE_RESPONSE:
-  case PAYLOAD_TYPE_TXT_MSG: {
-    int i = 0;
-    uint8_t dest_hash = pkt->payload[i++];
-    uint8_t src_hash = pkt->payload[i++];
+    case PAYLOAD_TYPE_PATH:
+    case PAYLOAD_TYPE_REQ:
+    case PAYLOAD_TYPE_RESPONSE:
+    case PAYLOAD_TYPE_TXT_MSG: {
+      int i = 0;
+      uint8_t dest_hash = pkt->payload[i++];
+      uint8_t src_hash = pkt->payload[i++];
 
       uint8_t* macAndData = &pkt->payload[i];   // MAC + encrypted data 
-    if (i + CIPHER_MAC_SIZE >= pkt->payload_len) {
-      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
-    } else if (!_tables->hasSeen(pkt)) {
+      if (i + CIPHER_MAC_SIZE >= pkt->payload_len) {
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
+      } else if (!_tables->hasSeen(pkt)) {
         // NOTE: this is a 'first packet wins' impl. When receiving from multiple paths, the first to arrive wins.
-      //       For flood mode, the path may not be the 'best' in terms of hops.
+        //       For flood mode, the path may not be the 'best' in terms of hops.
         // FUTURE: could send back multiple paths, using createPathReturn(), and let sender choose which to use(?)
 
         if (self_id.isHashMatch(&dest_hash)) {
@@ -233,109 +233,109 @@ direct_path_done:
       }
       break;
     }
-  case PAYLOAD_TYPE_ANON_REQ: {
-    int i = 0;
-    uint8_t dest_hash = pkt->payload[i++];
+    case PAYLOAD_TYPE_ANON_REQ: {
+      int i = 0;
+      uint8_t dest_hash = pkt->payload[i++];
       uint8_t* sender_pub_key = &pkt->payload[i]; i += PUB_KEY_SIZE;
 
       uint8_t* macAndData = &pkt->payload[i];   // MAC + encrypted data 
-    if (i + 2 >= pkt->payload_len) {
-      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
-    } else if (!_tables->hasSeen(pkt)) {
-      if (self_id.isHashMatch(&dest_hash)) {
-        Identity sender(sender_pub_key);
+      if (i + 2 >= pkt->payload_len) {
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
+      } else if (!_tables->hasSeen(pkt)) {
+        if (self_id.isHashMatch(&dest_hash)) {
+          Identity sender(sender_pub_key);
 
-        uint8_t secret[PUB_KEY_SIZE];
-        self_id.calcSharedSecret(secret, sender);
+          uint8_t secret[PUB_KEY_SIZE];
+          self_id.calcSharedSecret(secret, sender);
 
-        // decrypt, checking MAC is valid
-        uint8_t data[MAX_PACKET_PAYLOAD];
-        int len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
+          // decrypt, checking MAC is valid
+          uint8_t data[MAX_PACKET_PAYLOAD];
+          int len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
           if (len > 0) {  // success!
-          onAnonDataRecv(pkt, secret, sender, data, len);
-          pkt->markDoNotRetransmit();
+            onAnonDataRecv(pkt, secret, sender, data, len);
+            pkt->markDoNotRetransmit();
+          }
         }
+        action = routeRecvPacket(pkt);
       }
-      action = routeRecvPacket(pkt);
+      break;
     }
-    break;
-  }
-  case PAYLOAD_TYPE_GRP_DATA:
-  case PAYLOAD_TYPE_GRP_TXT: {
-    int i = 0;
-    uint8_t channel_hash = pkt->payload[i++];
+    case PAYLOAD_TYPE_GRP_DATA: 
+    case PAYLOAD_TYPE_GRP_TXT: {
+      int i = 0;
+      uint8_t channel_hash = pkt->payload[i++];
 
       uint8_t* macAndData = &pkt->payload[i];   // MAC + encrypted data 
-    if (i + 2 >= pkt->payload_len) {
-      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
-    } else if (!_tables->hasSeen(pkt)) {
-      // scan channels DB, for all matching hashes of 'channel_hash' (max 4 matches supported ATM)
-      GroupChannel channels[4];
-      int num = searchChannelsByHash(&channel_hash, channels, 4);
-      // for each matching channel, try to decrypt data
-      for (int j = 0; j < num; j++) {
-        // decrypt, checking MAC is valid
-        uint8_t data[MAX_PACKET_PAYLOAD];
-        int len = Utils::MACThenDecrypt(channels[j].secret, data, macAndData, pkt->payload_len - i);
+      if (i + 2 >= pkt->payload_len) {
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
+      } else if (!_tables->hasSeen(pkt)) {
+        // scan channels DB, for all matching hashes of 'channel_hash' (max 4 matches supported ATM)
+        GroupChannel channels[4];
+        int num = searchChannelsByHash(&channel_hash, channels, 4);
+        // for each matching channel, try to decrypt data
+        for (int j = 0; j < num; j++) {
+          // decrypt, checking MAC is valid
+          uint8_t data[MAX_PACKET_PAYLOAD];
+          int len = Utils::MACThenDecrypt(channels[j].secret, data, macAndData, pkt->payload_len - i);
           if (len > 0) {  // success!
-          onGroupDataRecv(pkt, pkt->getPayloadType(), channels[j], data, len);
-          break;
+            onGroupDataRecv(pkt, pkt->getPayloadType(), channels[j], data, len);
+            break;
+          }
         }
+        action = routeRecvPacket(pkt);
       }
-      action = routeRecvPacket(pkt);
+      break;
     }
-    break;
-  }
-  case PAYLOAD_TYPE_ADVERT: {
-    int i = 0;
-    Identity id;
+    case PAYLOAD_TYPE_ADVERT: {
+      int i = 0;
+      Identity id;
       memcpy(id.pub_key, &pkt->payload[i], PUB_KEY_SIZE); i += PUB_KEY_SIZE;
 
-    uint32_t timestamp;
+      uint32_t timestamp;
       memcpy(&timestamp, &pkt->payload[i], 4); i += 4;
       const uint8_t* signature = &pkt->payload[i]; i += SIGNATURE_SIZE;
 
-    if (i > pkt->payload_len) {
-      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete advertisement packet", getLogDateTime());
-    } else if (self_id.matches(id.pub_key)) {
-      MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): receiving SELF advert packet", getLogDateTime());
-    } else if (!_tables->hasSeen(pkt)) {
+      if (i > pkt->payload_len) {
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete advertisement packet", getLogDateTime());
+      } else if (self_id.matches(id.pub_key)) {
+        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): receiving SELF advert packet", getLogDateTime());
+      } else if (!_tables->hasSeen(pkt)) {
         uint8_t* app_data = &pkt->payload[i];
-      int app_data_len = pkt->payload_len - i;
+        int app_data_len = pkt->payload_len - i;
         if (app_data_len > MAX_ADVERT_DATA_SIZE) { app_data_len = MAX_ADVERT_DATA_SIZE; }
 
-      // check that signature is valid
-      bool is_ok;
-      {
-        uint8_t message[PUB_KEY_SIZE + 4 + MAX_ADVERT_DATA_SIZE];
-        int msg_len = 0;
+        // check that signature is valid
+        bool is_ok;
+        {
+          uint8_t message[PUB_KEY_SIZE + 4 + MAX_ADVERT_DATA_SIZE];
+          int msg_len = 0;
           memcpy(&message[msg_len], id.pub_key, PUB_KEY_SIZE); msg_len += PUB_KEY_SIZE;
           memcpy(&message[msg_len], &timestamp, 4); msg_len += 4;
           memcpy(&message[msg_len], app_data, app_data_len); msg_len += app_data_len;
 
-        is_ok = id.verify(signature, message, msg_len);
-      }
-      if (is_ok) {
-        MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): valid advertisement received!", getLogDateTime());
-        onAdvertRecv(pkt, id, timestamp, app_data, app_data_len);
-        action = routeRecvPacket(pkt);
-      } else {
+          is_ok = id.verify(signature, message, msg_len);
+        }
+        if (is_ok) {
+          MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): valid advertisement received!", getLogDateTime());
+          onAdvertRecv(pkt, id, timestamp, app_data, app_data_len);
+          action = routeRecvPacket(pkt);
+        } else {
           MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): received advertisement with forged signature! (app_data_len=%d)", getLogDateTime(), app_data_len);
+        }
       }
+      break;
     }
-    break;
-  }
-  case PAYLOAD_TYPE_RAW_CUSTOM: {
-    if (pkt->isRouteDirect() && !_tables->hasSeen(pkt)) {
-      onRawDataRecv(pkt);
+   case PAYLOAD_TYPE_RAW_CUSTOM: {
+      if (pkt->isRouteDirect() && !_tables->hasSeen(pkt)) {
+        onRawDataRecv(pkt);
         //action = routeRecvPacket(pkt);    don't flood route these (yet)
+      }
+      break;
     }
-    break;
-  }
-  case PAYLOAD_TYPE_MULTIPART:
-    if (pkt->payload_len > 2) {
+    case PAYLOAD_TYPE_MULTIPART:
+      if (pkt->payload_len > 2) {
         uint8_t remaining = pkt->payload[0] >> 4;  // num of packets in this multipart sequence still to be sent
-      uint8_t type = pkt->payload[0] & 0x0F;
+        uint8_t type = pkt->payload[0] & 0x0F;
 
         if (type == PAYLOAD_TYPE_ACK && pkt->payload_len >= 5) {    // a multipart ACK
           Packet tmp;
@@ -344,23 +344,23 @@ direct_path_done:
           tmp.payload_len = pkt->payload_len - 1;
           memcpy(tmp.payload, &pkt->payload[1], tmp.payload_len);
 
-        if (!_tables->hasSeen(&tmp)) {
-          uint32_t ack_crc;
-          memcpy(&ack_crc, tmp.payload, 4);
+          if (!_tables->hasSeen(&tmp)) {
+            uint32_t ack_crc;
+            memcpy(&ack_crc, tmp.payload, 4);
 
-          onAckRecv(&tmp, ack_crc);
+            onAckRecv(&tmp, ack_crc);
             //action = routeRecvPacket(&tmp);  // NOTE: currently not needed, as multipart ACKs not sent Flood
+          }
+        } else {
+          // FUTURE: other multipart types??
         }
-      } else {
-        // FUTURE: other multipart types??
       }
-    }
-    break;
+      break;
 
-  default:
+    default:
       MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): unknown payload type, header: %d", getLogDateTime(), (int) pkt->header);
-    // Don't flood route unknown packet types!   action = routeRecvPacket(pkt);
-    break;
+      // Don't flood route unknown packet types!   action = routeRecvPacket(pkt);
+      break;
   }
   return action;
 }

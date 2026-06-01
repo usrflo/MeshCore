@@ -200,8 +200,6 @@ bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
 
 void Dispatcher::checkRecv() {
   while (true) {
-    
-    // mem overflow: MESH_DEBUG_PRINTLN("Dispatcher::checkRecv-loop");
 
     Packet *pkt = nullptr;
     float score = 0.0f;
