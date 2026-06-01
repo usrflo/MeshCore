@@ -1,11 +1,11 @@
 #include "Dispatcher.h"
 
 #if MESH_PACKET_LOGGING
-#include <Arduino.h>
+  #include <Arduino.h>
 #endif
 
 #ifdef MESHCORE_SIMULATOR
-#include "sim_context.h"
+  #include "sim_context.h"
 #endif
 
 #include <math.h>
@@ -133,9 +133,9 @@ void Dispatcher::loop() {
   }
 
   if (getAGCResetInterval() > 0 && millisHasNowPassed(next_agc_reset_time)) {
-      _radio->resetAGC();
-      next_agc_reset_time = futureMillis(getAGCResetInterval());
-    }
+    _radio->resetAGC();
+    next_agc_reset_time = futureMillis(getAGCResetInterval());
+  }
 
   // check inbound (delayed) queue
   {
@@ -291,8 +291,6 @@ void Dispatcher::processRecvPacket(Packet* pkt) {
 }
 
 void Dispatcher::checkSend() {
-  // mem overflow: MESH_DEBUG_PRINTLN("Dispatcher::checkSend()");
-
   if (_mgr->getOutboundCount(_ms->getMillis()) == 0) return;
   
   updateTxBudget();
@@ -306,7 +304,7 @@ void Dispatcher::checkSend() {
   }
   
   if (!millisHasNowPassed(next_tx_time)) return;
-  if (_radio->isReceiving()) {   // LBT - check if radio is currently mid-receive, or if channel activity
+  if (_radio->isReceiving()) {
     if (cad_busy_start == 0) {
       cad_busy_start = _ms->getMillis();   // record when CAD busy state started
     }
@@ -326,9 +324,6 @@ void Dispatcher::checkSend() {
 
   outbound = _mgr->getNextOutbound(_ms->getMillis());
   if (outbound) {
-
-    MESH_DEBUG_PRINTLN("Dispatcher::checkSend(): prepare to send packet %s", outbound->getHashHex());
-
     int len = 0;
     uint8_t raw[MAX_TRANS_UNIT];
 
@@ -354,14 +349,14 @@ void Dispatcher::checkSend() {
         MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): ERROR: send start failed!", getLogDateTime());
 
         logTxFail(outbound, outbound->getRawLength());
-
+  
         releasePacket(outbound);  // return to pool
         outbound = NULL;
         return;
       }
       outbound_expiry = futureMillis(max_airtime);
 
-#if MESH_PACKET_LOGGING
+    #if MESH_PACKET_LOGGING
       Serial.print(getLogDateTime());
       Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d, attempt=%d)", len,
                     outbound->getPayloadType(), outbound->isRouteDirect() ? "D" : "F", outbound->payload_len, outbound->sending_attempts);
@@ -371,7 +366,7 @@ void Dispatcher::checkSend() {
       } else {
         Serial.printf("\n");
       }
-#endif
+    #endif
     }
   }
 }
@@ -429,11 +424,7 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
                        packet->sending_attempts);
 
     // Schedule re-send after the equivalent post-TX airtime silence has elapsed.
-    // Previously we derived this from (next_tx_time - now), but the new tx-budget system
-    // sets next_tx_time = now whenever the budget is healthy (which is almost always the
-    // case in short simulations / early in real device uptime), making silence_remaining_ms
-    // effectively 0. Instead we compute the silence directly from the packet's estimated
-    // airtime × budget factor — the same amount the old system enforced unconditionally.
+    // We compute the silence directly from the packet's estimated airtime × budget factor.
     // Adding 100ms jitter on top gives the downstream repeater enough time to forward the
     // packet, and for us to hear that forwarding (and cancel this re-send) before we
     // actually transmit. This avoids unnecessary retransmissions and collisions.

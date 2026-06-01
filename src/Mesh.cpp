@@ -162,7 +162,7 @@ direct_path_done:
   case PAYLOAD_TYPE_ACK: {
     int i = 0;
     uint32_t ack_crc;
-      memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
+    memcpy(&ack_crc, &pkt->payload[i], 4); i += 4;
     if (i > pkt->payload_len) {
       MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete ACK packet", getLogDateTime());
     } else if (!_tables->hasSeen(pkt)) {

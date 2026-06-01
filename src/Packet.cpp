@@ -68,8 +68,8 @@ uint8_t Packet::writeTo(uint8_t dest[]) const {
   uint8_t i = 0;
   dest[i++] = header;
   if (hasTransportCodes()) {
-  memcpy(&dest[i], &transport_codes[0], 2); i += 2;
-  memcpy(&dest[i], &transport_codes[1], 2); i += 2;
+    memcpy(&dest[i], &transport_codes[0], 2); i += 2;
+    memcpy(&dest[i], &transport_codes[1], 2); i += 2;
   }
   dest[i++] = path_len;
   i += writePath(&dest[i], path, path_len);
@@ -81,8 +81,8 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len) {
   uint8_t i = 0;
   header = src[i++];
   if (hasTransportCodes()) {
-  memcpy(&transport_codes[0], &src[i], 2); i += 2;
-  memcpy(&transport_codes[1], &src[i], 2); i += 2;
+    memcpy(&transport_codes[0], &src[i], 2); i += 2;
+    memcpy(&transport_codes[1], &src[i], 2); i += 2;
   } else {
     transport_codes[0] = transport_codes[1] = 0;
   }
@@ -94,9 +94,9 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len) {
 
   if (i >= len) return false;   // bad encoding
   payload_len = len - i;
-if (payload_len > sizeof(payload)) return false;  // bad encoding
-memcpy(payload, &src[i], payload_len); //i += payload_len;
-return true;   // success
+  if (payload_len > sizeof(payload)) return false;  // bad encoding
+  memcpy(payload, &src[i], payload_len); //i += payload_len;
+  return true;   // success
 }
 
 }
