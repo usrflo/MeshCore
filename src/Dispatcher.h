@@ -173,7 +173,7 @@ protected:
   virtual unsigned long getDutyCycleWindowMs() const { return 3600000; }
 
   /**
-   * \returns  maximum number of direct-route resend attempts (0 = disabled, default = 2, max = 5).
+   * \returns  maximum number of direct-route resend attempts (0 = disabled, default = 2, max = 3).
    */
   virtual uint8_t getMaxResendAttempts() const { return 2; }
 

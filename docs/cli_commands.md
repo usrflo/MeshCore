@@ -472,7 +472,7 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 - `set max.resend <value>`
 
 **Parameters:**
-- `value`: Maximum number of resend attempts for direct-routed packets (0–5). `0` disables resending entirely.
+- `value`: Maximum number of resend attempts for direct-routed packets (0–3). `0` disables resending entirely.
 
 **Default:** `2`
 

@@ -937,7 +937,7 @@ void MyMesh::begin(bool has_display) {
   _prefs.tx_power_dbm = constrain(_prefs.tx_power_dbm, -9, MAX_LORA_TX_POWER);
   _prefs.gps_enabled = constrain(_prefs.gps_enabled, 0, 1);  // Ensure boolean 0 or 1
   _prefs.gps_interval = constrain(_prefs.gps_interval, 0, 86400);  // Max 24 hours
-  _prefs.max_resend_attempts = constrain(_prefs.max_resend_attempts, 0, 5);
+  _prefs.max_resend_attempts = constrain(_prefs.max_resend_attempts, 0, 3);
 
 #ifdef BLE_PIN_CODE // 123456 by default
   if (_prefs.ble_pin == 0) {
@@ -1441,7 +1441,7 @@ void MyMesh::handleCmdFrame(size_t len) {
         if (len >= 5) {
           _prefs.multi_acks = cmd_frame[4];
           if (len >= 6) {
-            _prefs.max_resend_attempts = constrain(cmd_frame[5], 0, 5);
+            _prefs.max_resend_attempts = constrain(cmd_frame[5], 0, 3);
           }
         }
       }

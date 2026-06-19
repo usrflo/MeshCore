@@ -122,7 +122,7 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
 
     // sanitise settings
     _prefs->rx_boosted_gain = constrain(_prefs->rx_boosted_gain, 0, 1); // boolean
-    _prefs->max_resend_attempts = constrain(_prefs->max_resend_attempts, 0, 5);
+    _prefs->max_resend_attempts = constrain(_prefs->max_resend_attempts, 0, 3);
 
     file.close();
   }
@@ -513,8 +513,8 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     strcpy(reply, "OK");
   } else if (memcmp(config, "max.resend ", 11) == 0) {
     int v = atoi(&config[11]);
-    if (v < 0 || v > 5) {
-      strcpy(reply, "ERROR: max.resend must be 0-5");
+    if (v < 0 || v > 3) {
+      strcpy(reply, "ERROR: max.resend must be 0-3");
     } else {
       _prefs->max_resend_attempts = (uint8_t)v;
       savePrefs();
