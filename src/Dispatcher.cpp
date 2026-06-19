@@ -166,6 +166,7 @@ void Dispatcher::loop() {
   if (millisHasNowPassed(next_floor_calib_time)) {
     if (!_radio->isReceiving() && _mgr->getOutboundCount(_ms->getMillis()) == 0) {
       _radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
+      _radio->setCADEnabled(getCADEnabled());
       next_floor_calib_time = futureMillis(NOISE_FLOOR_CALIB_INTERVAL);
     }
   }
