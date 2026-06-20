@@ -472,6 +472,9 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
         } else {
           if (!is_retry) {
             addPost(client, (const char *)&data[5]);
+            if (strcmp((char *)&data[5], "/advert") == 0) {
+              sendSelfAdvertisement(1500, true);  // trigger room flood advert
+            }
           }
           temp[5] = 0; // no reply (ACK is enough)
           send_ack = true;
