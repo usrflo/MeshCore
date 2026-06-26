@@ -126,9 +126,9 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
 
     }
 
-    // For path_len=0 direct packets, no further path-based processing applies;
-    // fall through to general switch-case handling (e.g. ACK delivery via onAckRecv).
-    if (pkt->path_len < PATH_HASH_SIZE) goto direct_path_done;
+    // For direct packets with no relay hashes (zero-hop, addressed straight to us),
+    // no further path-based processing applies
+    if (pkt->getPathHashCount() == 0) goto direct_path_done;
 
     // check for 'early received' ACK
     if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
