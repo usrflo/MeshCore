@@ -80,12 +80,45 @@
 
 #define PACKET_LOG_FILE  "/packet_log"
 
+// Two-file append log for the recent-posts ring (bounded to MAX_UNSYNCED_POSTS).
+// /posts_cur holds the newest batch (append-only, 0..N-1 records); when it fills
+// it is rotated to /posts_old (delete the old /posts_old, rename /posts_cur -> it).
+// The newest batch is never rewritten/truncated -> crash-safe; a rotate is just a
+// remove()+rename() metadata op on SPIFFS/LittleFS (no data rewrite), so there is
+// never a full-file write.
+// PostRec gained a `seq` field -> record size changed (188 -> 192 B). The file
+// names are versioned so a stale pre-seq file (different record size, reads as
+// garbage) is never opened; it is simply left orphaned on flash.
+#define POSTS_FILE_CUR   "/posts_cur"
+#define POSTS_FILE_OLD   "/posts_old"
+#define POSTS_CLIENTSEQ_FILE  "/s_client_seq"   // per-companion last_seq watermark (pub_key+last_seq records)
+
 #define MAX_POST_TEXT_LEN    (160-9)
 
 struct PostInfo {
   mesh::Identity author;
   uint32_t post_timestamp;   // by OUR clock
+  uint32_t seq;              // monotonic post sequence (clock-independent sync watermark)
   char text[MAX_POST_TEXT_LEN+1];
+};
+
+// On-flash record for one post. Only the author's pub_key is stored: that is all
+// matches() and pushPostToClient() ever use (Identity.h / MyMesh.cpp).
+struct PostRec {
+  uint32_t post_timestamp;
+  uint32_t seq;
+  uint8_t  author_pubkey[PUB_KEY_SIZE];
+  char     text[MAX_POST_TEXT_LEN+1];
+};
+
+// Per-companion sync watermark (server-authoritative). Keyed by pub_key; persisted
+// in POSTS_CLIENTSEQ_FILE so the watermark survives a room-server restart
+// (independent of the clock). last_seq = highest confirmed-delivered post seq;
+// pushed_seq = seq currently outstanding (awaiting ACK), transient (not persisted).
+struct ClientSeq {
+  uint8_t  pub_key[PUB_KEY_SIZE];
+  uint32_t last_seq;
+  uint32_t pushed_seq;
 };
 
 class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
@@ -106,6 +139,13 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint16_t _num_posted, _num_post_pushes;
   int next_client_idx;  // for round-robin polling
   int next_post_idx;
+  uint16_t cur_count;   // valid records currently in POSTS_FILE_CUR (0..MAX_UNSYNCED_POSTS-1)
+  uint32_t next_post_seq;                 // next monotonic post sequence number
+  ClientSeq client_seqs[MAX_CLIENTS];     // per-companion seq watermarks
+  int n_client_seqs;
+  bool client_seq_dirty;                  // client_seqs changed -> lazy-flush pending
+  unsigned long client_seq_write_at;      // when to flush client_seqs to flash
+  unsigned long next_restart_notify;      // one-shot: when to send the post-restart re-login notice
   PostInfo posts[MAX_UNSYNCED_POSTS];   // cyclic queue
   CayenneLPP telemetry;
   RegionEntry* load_stack[8];
@@ -119,11 +159,21 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   int  matching_peer_indexes[MAX_CLIENTS];
 
   void addPost(ClientInfo* client, const char* postData);
+  void appendPostToFlash(uint8_t slot);       // append newest post to POSTS_FILE_CUR
+  void rotatePostFiles();                     // POSTS_FILE_CUR full -> rotate to POSTS_FILE_OLD (remove+rename)
+  int  streamFileIntoRing(const char* fname); // stream a batch file into the RAM ring (returns records read)
+  bool loadPostsFromFlash();                  // stream POSTS_FILE_OLD then _CUR into the ring (keeps newest N)
+  uint32_t getClientLastSeq(const uint8_t* pubkey);  // lookup a companion's last_seq (0 if unknown)
+  ClientSeq* ensureClientSeq(const uint8_t* pubkey); // find or create a companion's seq entry (evicts if full)
+  void loadClientSeqs();                             // boot: read POSTS_CLIENTSEQ_FILE into client_seqs
+  void saveClientSeqs();                             // lazy-flush client_seqs to POSTS_CLIENTSEQ_FILE
   void pushPostToClient(ClientInfo* client, PostInfo& post);
+  void sendRestartNotice(ClientInfo* client);   // one-shot post-restart "please re-login" notice (server-only)
   uint8_t getUnsyncedCount(ClientInfo* client);
   bool processAck(const uint8_t *data);
   mesh::Packet* createSelfAdvert();
   File openAppend(const char* fname);
+  File openWrite(const char* fname);    // open (create/truncate) for sequential write, like ClientACL::openWrite
   int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
 
 protected:

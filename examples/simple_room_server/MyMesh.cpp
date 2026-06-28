@@ -10,6 +10,8 @@
 
 #define POST_SYNC_DELAY_SECS        6
 
+#define RESTART_NOTIFY_DELAY        2000   // ms after boot before sending the one-shot re-login notice
+
 #define FIRMWARE_VER_LEVEL       1
 
 #define REQ_TYPE_GET_STATUS         0x01 // same as _GET_STATS
@@ -40,11 +42,19 @@ struct ServerStats {
 
 void MyMesh::addPost(ClientInfo *client, const char *postData) {
   // TODO: suggested postData format: <title>/<descrption>
-  posts[next_post_idx].author = client->id; // add to cyclic queue
-  StrHelper::strncpy(posts[next_post_idx].text, postData, MAX_POST_TEXT_LEN);
+  uint8_t slot = next_post_idx; // cyclic slot being filled (also appended to flash below)
+  posts[slot].author = client->id; // add to cyclic queue
+  StrHelper::strncpy(posts[slot].text, postData, MAX_POST_TEXT_LEN);
 
-  posts[next_post_idx].post_timestamp = getRTCClock()->getCurrentTimeUnique();
+  posts[slot].post_timestamp = getRTCClock()->getCurrentTimeUnique();
+  posts[slot].seq = next_post_seq++;   // assign monotonic, clock-independent sequence
   next_post_idx = (next_post_idx + 1) % MAX_UNSYNCED_POSTS;
+
+  appendPostToFlash(slot);               // append newest post to /posts_cur (cheap, ~200 B)
+  if (cur_count >= MAX_UNSYNCED_POSTS) { // current batch full -> rotate (no full write, just remove+rename)
+    rotatePostFiles();
+    cur_count = 0;
+  }
 
   next_push = futureMillis(PUSH_NOTIFY_DELAY_MILLIS);
   _num_posted++; // stats
@@ -70,6 +80,7 @@ void MyMesh::pushPostToClient(ClientInfo *client, PostInfo &post) {
   // calc expected ACK reply
   mesh::Utils::sha256((uint8_t *)&client->extra.room.pending_ack, 4, reply_data, len, client->id.pub_key, PUB_KEY_SIZE);
   client->extra.room.push_post_timestamp = post.post_timestamp;
+  ensureClientSeq(client->id.pub_key)->pushed_seq = post.seq; // remember seq awaiting this ACK
 
   auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, reply_data, len);
   if (reply) {
@@ -90,10 +101,42 @@ void MyMesh::pushPostToClient(ClientInfo *client, PostInfo &post) {
   }
 }
 
+// One-shot, fire-and-forget: tell a known companion that this room server just
+// restarted and a re-login is needed. Sent as a SIGNED_PLAIN message (author =
+// this server), which the companion already displays via onSignedMessageRecv ->
+// queueMessage (no companion change). NOT added to the posts[] ring and no
+// pending_ack is set; the companion's ACK is simply ignored by processAck.
+void MyMesh::sendRestartNotice(ClientInfo *client) {
+  char text[MAX_POST_TEXT_LEN + 1];
+  snprintf(text, sizeof(text), "Room server restarted, please re-login");
+
+  int len = 0;
+  uint32_t ts = getRTCClock()->getCurrentTimeUnique();
+  memcpy(&reply_data[len], &ts, 4);
+  len += 4; // timestamp (a past/unique one is accepted by the client)
+
+  uint8_t attempt;
+  getRNG()->random(&attempt, 1);
+  reply_data[len++] = (TXT_TYPE_SIGNED_PLAIN << 2) | (attempt & 3);
+
+  memcpy(&reply_data[len], self_id.pub_key, 4); // this server is the author
+  len += 4;
+
+  int tlen = strlen(text);
+  memcpy(&reply_data[len], text, tlen);
+  len += tlen;
+
+  auto pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, reply_data, len);
+  if (pkt) {
+    sendDirect(pkt, client->out_path, client->out_path_len);
+  }
+}
+
 uint8_t MyMesh::getUnsyncedCount(ClientInfo *client) {
   uint8_t count = 0;
+  uint32_t last_seq = getClientLastSeq(client->id.pub_key);
   for (int k = 0; k < MAX_UNSYNCED_POSTS; k++) {
-    if (posts[k].post_timestamp > client->extra.room.sync_since // is new post for this Client?
+    if ((posts[k].seq > last_seq || posts[k].post_timestamp > client->extra.room.sync_since) // new post for this Client?
         && !posts[k].author.matches(client->id)) {   // don't push posts to the author
       count++;
     }
@@ -108,6 +151,13 @@ bool MyMesh::processAck(const uint8_t *data) {
       client->extra.room.pending_ack = 0; // clear this, so next push can happen
       client->extra.room.push_failures = 0;
       client->extra.room.sync_since = client->extra.room.push_post_timestamp; // advance Client's SINCE timestamp, to sync next post
+      { // also advance the server-authoritative seq watermark (clock-independent)
+        ClientSeq* e = ensureClientSeq(client->id.pub_key);
+        e->last_seq = e->pushed_seq;
+        client_seq_dirty = true;
+        client_seq_write_at = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+        MESH_DEBUG_PRINTLN("processAck: client %02X acked -> last_seq=%u", (uint32_t)client->id.pub_key[0], (uint32_t)e->last_seq);
+      }
       return true;
     }
   }
@@ -129,6 +179,162 @@ File MyMesh::openAppend(const char *fname) {
 #else
   return _fs->open(fname, "a", true);
 #endif
+}
+
+// Append the just-added post (RAM slot `slot`) to the current batch file
+// /posts_cur (append-only, ~200 B per post). openAppend() truly appends on all
+// platforms (ESP32/RP2040 "a"; Adafruit FILE_O_WRITE auto-seeks to END).
+void MyMesh::appendPostToFlash(uint8_t slot) {
+  if (!_fs) return;
+  File file = openAppend(POSTS_FILE_CUR);
+  if (!file) return;
+  PostRec r;
+  r.post_timestamp = posts[slot].post_timestamp;
+  r.seq = posts[slot].seq;
+  memcpy(r.author_pubkey, posts[slot].author.pub_key, PUB_KEY_SIZE);
+  memcpy(r.text, posts[slot].text, sizeof(r.text));
+  if (file.write((uint8_t *)&r, sizeof(r)) == sizeof(r)) {
+    cur_count++;
+  }
+  file.close();
+}
+
+// /posts_cur has reached MAX_UNSYNCED_POSTS records: promote it to /posts_old.
+// remove()+rename() are metadata-only on SPIFFS/LittleFS (no data rewrite), and
+// the newest batch is never truncated, so a crash here can at most lose the
+// OLDER batch -> the newest MAX_UNSYNCED_POSTS stay recoverable.
+void MyMesh::rotatePostFiles() {
+  if (!_fs) return;
+  _fs->remove(POSTS_FILE_OLD);                      // drop the previous (older) batch
+  _fs->rename(POSTS_FILE_CUR, POSTS_FILE_OLD);      // current batch becomes the old batch
+  // /posts_cur no longer exists; appendPostToFlash() recreates it on the next post.
+}
+
+File MyMesh::openWrite(const char *fname) {
+#if defined(NRF52_PLATFORM)
+  _fs->remove(fname);                 // Adafruit FILE_O_WRITE does not truncate an existing file
+  return _fs->open(fname, FILE_O_WRITE);
+#elif defined(RP2040_PLATFORM)
+  return _fs->open(fname, "w");
+#else
+  return _fs->open(fname, "w", true);
+#endif
+}
+
+// Lookup a companion's last delivered seq (0 if unknown -> client receives full history).
+uint32_t MyMesh::getClientLastSeq(const uint8_t *pubkey) {
+  for (int i = 0; i < n_client_seqs; i++) {
+    if (memcmp(client_seqs[i].pub_key, pubkey, PUB_KEY_SIZE) == 0) return client_seqs[i].last_seq;
+  }
+  return 0;
+}
+
+// Find or create a companion's seq entry. If the table is full, evict the
+// least-progressed (smallest last_seq) entry. Creation marks the table dirty.
+ClientSeq* MyMesh::ensureClientSeq(const uint8_t *pubkey) {
+  for (int i = 0; i < n_client_seqs; i++) {
+    if (memcmp(client_seqs[i].pub_key, pubkey, PUB_KEY_SIZE) == 0) return &client_seqs[i];
+  }
+  if (n_client_seqs >= MAX_CLIENTS) {                      // full -> evict least-progressed entry
+    int victim = 0;
+    for (int i = 1; i < n_client_seqs; i++) {
+      if (client_seqs[i].last_seq < client_seqs[victim].last_seq) victim = i;
+    }
+    if (victim != n_client_seqs - 1) {
+      memmove(&client_seqs[victim], &client_seqs[victim + 1], (n_client_seqs - victim - 1) * sizeof(ClientSeq));
+    }
+    n_client_seqs--;
+  }
+  ClientSeq* e = &client_seqs[n_client_seqs++];
+  memcpy(e->pub_key, pubkey, PUB_KEY_SIZE);
+  e->last_seq = 0;
+  e->pushed_seq = 0;
+  client_seq_dirty = true;
+  client_seq_write_at = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+  return e;
+}
+
+// Boot: read POSTS_CLIENTSEQ_FILE (records of pub_key[32] + last_seq[4]) into client_seqs.
+void MyMesh::loadClientSeqs() {
+  n_client_seqs = 0;
+  if (!_fs || !_fs->exists(POSTS_CLIENTSEQ_FILE)) return;
+#if defined(RP2040_PLATFORM)
+  File file = _fs->open(POSTS_CLIENTSEQ_FILE, "r");
+#else
+  File file = _fs->open(POSTS_CLIENTSEQ_FILE);
+#endif
+  if (!file) return;
+  while (n_client_seqs < MAX_CLIENTS) {
+    ClientSeq e;
+    if (file.read((uint8_t *)e.pub_key, PUB_KEY_SIZE) != PUB_KEY_SIZE) break;
+    if (file.read((uint8_t *)&e.last_seq, 4) != 4) break;
+    e.pushed_seq = 0;
+    client_seqs[n_client_seqs++] = e;
+  }
+  file.close();
+}
+
+// Lazy-flush: rewrite the whole POSTS_CLIENTSEQ_FILE from client_seqs (last_seq only).
+void MyMesh::saveClientSeqs() {
+  if (!_fs) return;
+  File file = openWrite(POSTS_CLIENTSEQ_FILE);
+  if (!file) return;
+  for (int i = 0; i < n_client_seqs; i++) {
+    if (file.write((uint8_t *)client_seqs[i].pub_key, PUB_KEY_SIZE) != PUB_KEY_SIZE) break;
+    if (file.write((uint8_t *)&client_seqs[i].last_seq, 4) != 4) break;
+  }
+  file.close();
+  client_seq_dirty = false;
+}
+
+// Read all PostRec records from `fname` (chronological order) into the RAM ring
+// at next_post_idx. Reading the older batch first means the ring ends up holding
+// the newest MAX_UNSYNCED_POSTS across the files read. Returns valid records read.
+int MyMesh::streamFileIntoRing(const char *fname) {
+  if (!_fs->exists(fname)) return 0;
+#if defined(RP2040_PLATFORM)
+  File file = _fs->open(fname, "r");
+#else
+  File file = _fs->open(fname);
+#endif
+  if (!file) return 0;
+  int count = 0;
+  uint32_t prev_seq = 0;
+  PostRec r;
+  while (file.read((uint8_t *)&r, sizeof(r)) == (int)sizeof(r)) {
+    if (r.seq && r.seq < prev_seq) break;            // monotonic violated -> corrupt/stale file, stop
+    if (r.seq) prev_seq = r.seq;
+    if (r.post_timestamp == 0) continue;            // skip empty records
+    memset(&posts[next_post_idx].author, 0, sizeof(posts[next_post_idx].author));
+    memcpy(posts[next_post_idx].author.pub_key, r.author_pubkey, PUB_KEY_SIZE);
+    memcpy(posts[next_post_idx].text, r.text, sizeof(r.text));
+    posts[next_post_idx].post_timestamp = r.post_timestamp;
+    posts[next_post_idx].seq = r.seq;
+    next_post_idx = (next_post_idx + 1) % MAX_UNSYNCED_POSTS;
+    count++;
+  }
+  file.close();
+  return count;
+}
+
+// Restore the posts[] ring from flash: stream /posts_old then /posts_cur through
+// the ring (keeps the newest N), and finish any rotation that a restart
+// interrupted (cur full at boot). Defensive: missing/short files yield an empty ring.
+bool MyMesh::loadPostsFromFlash() {
+  if (!_fs) return false;
+  memset(posts, 0, sizeof(posts));
+  next_post_idx = 0;
+  streamFileIntoRing(POSTS_FILE_OLD);               // older batch first
+  cur_count = streamFileIntoRing(POSTS_FILE_CUR);   // newer batch, also counts it
+  if (cur_count >= MAX_UNSYNCED_POSTS) {            // interrupted rotation -> finish it
+    rotatePostFiles();
+    cur_count = 0;
+  }
+  next_post_seq = 1;                                // derive: continue past the highest loaded seq
+  for (int k = 0; k < MAX_UNSYNCED_POSTS; k++) {
+    if (posts[k].seq >= next_post_seq) next_post_seq = posts[k].seq + 1;
+  }
+  return true;
 }
 
 int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t *payload,
@@ -664,6 +870,11 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_post_idx = 0;
   next_client_idx = 0;
   next_push = 0;
+  cur_count = 0;
+  next_post_seq = 1;
+  n_client_seqs = 0;
+  client_seq_dirty = false;
+  next_restart_notify = 0;
   memset(posts, 0, sizeof(posts));
   _num_posted = _num_post_pushes = 0;
 
@@ -678,6 +889,11 @@ void MyMesh::begin(FILESYSTEM *fs) {
 
   acl.load(_fs, self_id);
   region_map.load(_fs);
+
+  loadPostsFromFlash();   // restore recent posts ring so it survives a restart
+  loadClientSeqs();       // restore per-companion seq watermarks (clock-independent sync)
+
+  next_restart_notify = futureMillis(RESTART_NOTIFY_DELAY); // one-shot re-login notice after restart
 
   // establish default-scope
   {
@@ -943,7 +1159,8 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
 }
 
 bool MyMesh::saveFilter(ClientInfo* client) {
-  return client->isAdmin();    // only save Admins
+  (void)client;
+  return true;   // persist all known clients so their keep-alive survives a server restart
 }
 
 void MyMesh::loop() {
@@ -966,10 +1183,11 @@ void MyMesh::loop() {
         client->extra.room.push_failures < 3) { // not already waiting for ACK, AND not evicted, AND retries not max
       MESH_DEBUG_PRINTLN("loop - checking for client %02X", (uint32_t)client->id.pub_key[0]);
       uint32_t now = getRTCClock()->getCurrentTime();
+      uint32_t last_seq = getClientLastSeq(client->id.pub_key);
       for (int k = 0, idx = next_post_idx; k < MAX_UNSYNCED_POSTS; k++) {
         auto p = &posts[idx];
         if (now >= p->post_timestamp + POST_SYNC_DELAY_SECS &&
-            p->post_timestamp > client->extra.room.sync_since // is new post for this Client?
+            (p->seq > last_seq || p->post_timestamp > client->extra.room.sync_since) // new post for this Client?
             && !p->author.matches(client->id)) {   // don't push posts to the author
           // push this post to Client, then wait for ACK
           pushPostToClient(client, *p);
@@ -980,7 +1198,14 @@ void MyMesh::loop() {
         idx = (idx + 1) % MAX_UNSYNCED_POSTS; // wrap to start of cyclic queue
       }
     } else {
-      MESH_DEBUG_PRINTLN("loop - skipping busy (or evicted) client %02X", (uint32_t)client->id.pub_key[0]);
+      static unsigned long next_skip_log = 0;   // throttle: idle round-robin would otherwise spam this every 150 ms
+      if (millisHasNowPassed(next_skip_log)) {
+        const char *why = (client->last_activity == 0) ? "inactive(last_activity==0)" :
+                          (client->extra.room.pending_ack != 0) ? "busy(pending_ack)" :
+                          "evicted(push_failures>=3)";
+        MESH_DEBUG_PRINTLN("loop - skipping client %02X (%s)", (uint32_t)client->id.pub_key[0], why);
+        next_skip_log = futureMillis(5000);
+      }
     }
     next_client_idx = (next_client_idx + 1) % acl.getNumClients(); // round robin polling for each client
 
@@ -990,6 +1215,20 @@ void MyMesh::loop() {
       // were no unsynced posts for curr client, so process next client much quicker! (in next loop())
       next_push = futureMillis(SYNC_PUSH_INTERVAL / 8);
     }
+  }
+
+  if (client_seq_dirty && millisHasNowPassed(client_seq_write_at)) { // lazy-flush per-companion seq watermarks
+    saveClientSeqs();
+  }
+
+  if (next_restart_notify && millisHasNowPassed(next_restart_notify)) { // one-shot re-login notice after restart
+    int n = 0;
+    for (int i = 0; i < acl.getNumClients(); i++) {
+      auto c = acl.getClientByIdx(i);
+      if (c->out_path_len != OUT_PATH_UNKNOWN) { sendRestartNotice(c); n++; }
+    }
+    MESH_DEBUG_PRINTLN("restart: sent re-login notice to %d client(s)", (uint32_t)n);
+    next_restart_notify = 0;
   }
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {
