@@ -31,6 +31,7 @@ class Mesh : public Dispatcher {
 
   void removeSelfFromPath(Packet* packet);
   void routeDirectRecvAcks(Packet* packet, uint32_t delay_millis);
+  void cancelPendingFinalHopResend();  // drop a queued final-hop resend when the destination's ACK transits back
   //void routeRecvAcks(Packet* packet, uint32_t delay_millis);
   DispatcherAction forwardMultipartDirect(Packet* pkt);
 

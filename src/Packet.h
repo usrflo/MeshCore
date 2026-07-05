@@ -52,6 +52,9 @@ public:
   uint8_t hash[MAX_HASH_SIZE];
   mutable char hash_hex[MAX_HASH_SIZE * 2 + 1];
   uint8_t sending_attempts;
+  bool final_hop_ack_resend;  // runtime-only: set when this node forwards the final relay hop
+                              // of an ACK-producing direct packet (e.g. TXT_MSG). Allows exactly
+                              // one ACK-cancellable resend from resendPacket(); not wire-serialized.
 
   /**
    * \brief calculate the hash of payload + type

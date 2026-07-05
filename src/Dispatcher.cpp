@@ -439,7 +439,13 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
   // prepare error correction via potential retransmit:
   // re-send only direct routed packets that carry at least one relay hash, so that a
   // downstream relay's forward can be overheard to cancel this re-send.
-  if (packet->isRouteDirect() && packet->getPathHashCount() > 0 && packet->sending_attempts < getMaxResendAttempts()) {
+  // The final relay hop (path empty after removeSelfFromPath, flagged via
+  // final_hop_ack_resend) is the exception: there is no downstream forward to overhear, but
+  // the destination ACKs receipt. Allow exactly one resend there (sending_attempts == 0),
+  // cancellable by the returning ACK (see Mesh::cancelPendingFinalHopResend).
+  if (packet->isRouteDirect() && packet->sending_attempts < getMaxResendAttempts() &&
+      (packet->getPathHashCount() > 0 ||
+       (packet->final_hop_ack_resend && packet->sending_attempts == 0))) {
     packet->sending_attempts++;
 
     MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),

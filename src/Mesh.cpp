@@ -128,8 +128,20 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
     }
 
     // For direct packets with no relay hashes (zero-hop, addressed straight to us),
-    // no further path-based processing applies
-    if (pkt->getPathHashCount() == 0) goto direct_path_done;
+    // no further path-based processing applies.
+    // A destination's receipt-ACK for a TXT_MSG we delivered as the final relay hop arrives
+    // exactly this way: zero-path direct, because the destination ACKs its immediate
+    // neighbour (it has no usable multi-hop return path to the originator, so the ACK only
+    // travels one hop). The ACK-relay branch below is gated on is_next_hop, which requires
+    // getPathHashCount() > 0 — unreachable for such an ACK. Cancel any pending final-hop
+    // resend here, before the early-exit, so the resend does not fire after a delivery the
+    // destination has already acknowledged.
+    if (pkt->getPathHashCount() == 0) {
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+        cancelPendingFinalHopResend();
+      }
+      goto direct_path_done;
+    }
 
     // check for 'early received' ACK
     if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
@@ -145,6 +157,12 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
       if (pkt->getPayloadType() == PAYLOAD_TYPE_MULTIPART) {
         return forwardMultipartDirect(pkt);
       } else if (pkt->getPayloadType() == PAYLOAD_TYPE_ACK) {
+        // This ACK is addressed back along the return path with us as the next hop, i.e. it
+        // transits back through the very relay that delivered the original message. That is
+        // proof the destination received it: cancel any pending final-hop resend so we do not
+        // needlessly retransmit to the destination.
+        cancelPendingFinalHopResend();
+
         if (!_tables->wasSeen(pkt)) {  // don't retransmit!
           _tables->markSeen(pkt);
           removeSelfFromPath(pkt);
@@ -155,12 +173,25 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
 
       if (!_tables->wasSeen(pkt)) {
         _tables->markSeen(pkt);
+
+        // Detect the final relay hop: only our own hash remained in the path, so after
+        // removeSelfFromPath() the destination is reached implicitly (it lives in the payload
+        // dest_hash, not as a relay hash) and getPathHashCount() becomes 0. The normal resend
+        // guard (getPathHashCount() > 0) would then suppress any retransmit, leaving a lost
+        // final-hop TX unrecoverable at the relay layer. TXT_MSG destinations ACK receipt, so
+        // mark this packet to allow exactly one ACK-cancellable resend (see resendPacket() and
+        // cancelPendingFinalHopResend()): the resend self-cancels on the returning ACK, so the
+        // destination is not flooded.
+        if (pkt->getPathHashCount() == 1 && pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
+          pkt->final_hop_ack_resend = true;
+        }
+
         removeSelfFromPath(pkt);
 
         MESH_DEBUG_PRINTLN("Mesh::onRecvPacket(): prepare to repeat packet %s", pkt->getHashHex());
 
         uint32_t d = getDirectRetransmitDelay(pkt);
-        return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
+        return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority
       }
     }
     return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
@@ -396,6 +427,34 @@ void Mesh::removeSelfFromPath(Packet* pkt) {
   uint8_t sz = pkt->getPathHashSize();
   for (int k = 0; k < pkt->getPathHashCount()*sz; k += sz) {  // shuffle path by 1 'entry'
     memcpy(&pkt->path[k], &pkt->path[k + sz], sz);
+  }
+}
+
+void Mesh::cancelPendingFinalHopResend() {
+  // The destination has ACKed receipt. ACKs are produced in delivery order and (for the
+  // direct zero-path ACKs a companion sends) travel only one hop back to us, so the OLDEST
+  // pending final-hop resend corresponds to the message this ACK acknowledges (FIFO). Cancel
+  // exactly one — the earliest still-queued resend.
+  //
+  // The sending_attempts > 0 guard is essential: it selects only actual resends (the attempt
+  // counter is bumped in resendPacket() before re-queueing) and never the original final-hop
+  // forward, which is also flagged final_hop_ack_resend while it sits in the queue waiting to
+  // be TXed. Without it, an ACK arriving in that brief pre-TX window would cancel the delivery
+  // itself. (send_queue.add() appends, so index 0 is the oldest entry.)
+  //
+  // An in-flight resend (the 'outbound' packet, already on-air) is deliberately NOT touched:
+  // aborting a mid-TX send risks radio state, and the duplicate it delivers is harmless (the
+  // destination dedups via wasSeen). Only queued, not-yet-sent resends are cancelled.
+  for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
+    Packet* queued = _mgr->getOutboundByIdx(i);
+    if (queued && queued->final_hop_ack_resend && queued->sending_attempts > 0 &&
+        queued->isRouteDirect() && queued->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
+      MESH_DEBUG_PRINTLN("%s Mesh::cancelPendingFinalHopResend(): ACK heard, canceling oldest "
+                         "final-hop resend (queued) %s", getLogDateTime(), queued->getHashHex());
+      Packet* removed = _mgr->removeOutboundByIdx(i);
+      if (removed) _mgr->free(removed);
+      return;
+    }
   }
 }
 
