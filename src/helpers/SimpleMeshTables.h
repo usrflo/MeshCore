@@ -36,7 +36,7 @@ public:
   }
 #endif
 
-  bool hasSeen(const mesh::Packet* packet) override {
+  bool wasSeen(const mesh::Packet* packet) override {
     // ACK packets receive dedicated deduplication for three reasons:
     //
     // 1. The first 4 payload bytes (ack_crc) already uniquely identify the ACK – they
@@ -52,23 +52,23 @@ public:
     //
     // 3. clear() for ACKs is a simple 4-byte linear scan; using the general table
     //    would require SHA256 + a full memcmp loop over MAX_PACKET_HASHES entries.
+    //
+    // Note: wasSeen() is a pure predicate and does NOT insert. Every miss must be
+    // followed by markSeen() at the call site to record the packet (see Mesh.cpp).
     if (packet->getPayloadType() == PAYLOAD_TYPE_ACK) {
       uint32_t ack;
       memcpy(&ack, packet->payload, 4);
       for (int i = 0; i < MAX_PACKET_ACKS; i++) {
-        if (ack == _acks[i]) { 
+        if (ack == _acks[i]) {
           if (packet->isRouteDirect()) {
             _direct_dups++;   // keep some stats
           } else {
             _flood_dups++;
           }
-          MESH_DEBUG_PRINTLN("SimpleMeshTables::hasSeen(): packet %s already seen", packet->getHashHex());
+          MESH_DEBUG_PRINTLN("SimpleMeshTables::wasSeen(): ACK already seen (crc=%08x)", (unsigned)ack);
           return true;
         }
       }
-  
-      _acks[_next_ack_idx] = ack;
-      _next_ack_idx = (_next_ack_idx + 1) % MAX_PACKET_ACKS;  // cyclic table  
       return false;
     }
 
@@ -78,17 +78,28 @@ public:
     for (int i = 0; i < MAX_PACKET_HASHES; i++, sp += MAX_HASH_SIZE) {
       if (memcmp(packet->hash, sp, MAX_HASH_SIZE) == 0) {
         if (packet->isRouteDirect()) {
-          _direct_dups++;   // keep some stats
+          _direct_dups++;
         } else {
           _flood_dups++;
         }
         return true;
       }
     }
+    return false;
+  }
 
+  void markSeen(const mesh::Packet* packet) override {
+    if (packet->getPayloadType() == PAYLOAD_TYPE_ACK) {
+      uint32_t ack;
+      memcpy(&ack, packet->payload, 4);
+      _acks[_next_ack_idx] = ack;
+      _next_ack_idx = (_next_ack_idx + 1) % MAX_PACKET_ACKS;  // cyclic table
+      return;
+    }
+
+    packet->calculatePacketHash();
     memcpy(&_hashes[_next_idx * MAX_HASH_SIZE], packet->hash, MAX_HASH_SIZE);
     _next_idx = (_next_idx + 1) % MAX_PACKET_HASHES;  // cyclic table
-    return false;
   }
 
   void clear(const mesh::Packet* packet) override {
