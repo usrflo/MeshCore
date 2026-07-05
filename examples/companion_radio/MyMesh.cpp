@@ -284,11 +284,22 @@ uint8_t MyMesh::getExtraAckTransmitCount() const {
 }
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
-  if (_serial->isConnected() && len + 3 <= MAX_FRAME_SIZE) {
+  // The 0x88 frame carries a 1 ms device timestamp (millis() since boot, u32 LE)
+  // right after RSSI, so a host observer can measure exact inter-frame timing
+  // independently of USB-CDC / OS-side output batching (which would otherwise
+  // quantise host-side timestamps to ~1 s). writeFrame pushes synchronously with
+  // no firmware-side buffering, so this stamp reflects the true RX instant.
+  // Layout: [0x88][snr*4][rssi][millis LE x4][raw…]
+  if (_serial->isConnected() && len + 7 <= MAX_FRAME_SIZE) {
     int i = 0;
     out_frame[i++] = PUSH_CODE_LOG_RX_DATA;
     out_frame[i++] = (int8_t)(snr * 4);
     out_frame[i++] = (int8_t)(rssi);
+    uint32_t ms = _ms->getMillis();
+    out_frame[i++] = (uint8_t)(ms);
+    out_frame[i++] = (uint8_t)(ms >> 8);
+    out_frame[i++] = (uint8_t)(ms >> 16);
+    out_frame[i++] = (uint8_t)(ms >> 24);
     memcpy(&out_frame[i], raw, len);
     i += len;
 
