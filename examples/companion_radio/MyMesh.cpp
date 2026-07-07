@@ -106,6 +106,10 @@
 #define DIRECT_SEND_PERHOP_EXTRA_MILLIS 250
 #define LAZY_CONTACTS_WRITE_DELAY       5000
 
+#ifndef RESEND_INTERFERENCE_MARGIN
+  #define RESEND_INTERFERENCE_MARGIN   12   // dB above noise floor that blocks a resend (non-invasive LBT)
+#endif
+
 #define PUBLIC_GROUP_PSK                "izOH6cXN6mrJ5e26oRXNcg=="
 
 // these are _pushed_ to client app at any time
@@ -263,6 +267,15 @@ int MyMesh::getInterferenceThreshold() const {
 }
 bool MyMesh::getCADEnabled() const {
   return true; // hardware CAD before TX (no CLI toggle on companion; enabled by default)
+}
+
+bool MyMesh::isResendChannelActive() {
+  // Non-invasive resend LBT (NO CAD, so RX stays open to overhear the downstream forward
+  // and cancel the resend). Block the resend when a LoRa preamble/header is being received
+  // (often that forward itself) OR the live channel energy is well above the noise floor
+  // (foreign interference). isReceivingPacket()/getCurrentRSSI() are IRQ/register reads.
+  int margin = (int)radio_driver.getCurrentRSSI() - _radio->getNoiseFloor();
+  return radio_driver.isReceivingPacket() || (margin >= RESEND_INTERFERENCE_MARGIN);
 }
 
 int MyMesh::calcRxDelay(float score, uint32_t air_time) const {

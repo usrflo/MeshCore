@@ -16,6 +16,10 @@ namespace mesh {
 #define MIN_TX_BUDGET_RESERVE_MS   100    // min budget (ms) required before allowing next TX
 #define MIN_TX_BUDGET_AIRTIME_DIV  2      // require at least 1/N of estimated airtime as budget before TX
 
+#ifndef RESEND_BACKOFF_STRETCH_MS
+  #define RESEND_BACKOFF_STRETCH_MS  1000   // linear per-attempt resend backoff (ride out interference)
+#endif
+
 #ifndef NOISE_FLOOR_CALIB_INTERVAL
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
 #endif
@@ -326,7 +330,16 @@ void Dispatcher::checkSend() {
   }
   
   if (!millisHasNowPassed(next_tx_time)) return;
-  if (_radio->isReceiving()) {
+
+  // Pick the channel-busy check by packet kind. Resends (direct, already attempted)
+  // use a NON-invasive gate via isResendChannelActive() so the radio stays in RX and
+  // can still overhear the downstream forward → resend cancellation. First sends keep
+  // the CAD-based carrier sense (collision avoidance worth the momentary deafness).
+  Packet* pending = _mgr->peekNextOutbound(_ms->getMillis());
+  bool resend_lbt = pending && pending->isRouteDirect() && pending->sending_attempts > 0;
+  bool channel_busy = resend_lbt ? isResendChannelActive() : _radio->isReceiving();
+
+  if (channel_busy) {
     if (cad_busy_start == 0) {
       cad_busy_start = _ms->getMillis();   // record when CAD busy state started
     }
@@ -459,7 +472,11 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
     uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
     uint32_t packet_airtime_ms = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
     uint32_t silence_ms = (uint32_t)(packet_airtime_ms * getAirtimeBudgetFactor());
-    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_ms + retransmit_delay + 100)));
+    // Linear backoff per attempt (sending_attempts was just incremented to 1,2,3…): later
+    // resends land further out so they cross longer interference bursts, and the extra time
+    // gives the downstream forward more chance to be overheard → resend cancellation.
+    uint32_t backoff = (packet->sending_attempts - 1) * RESEND_BACKOFF_STRETCH_MS;
+    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_ms + retransmit_delay + 100 + backoff)));
     return true;
   }
 

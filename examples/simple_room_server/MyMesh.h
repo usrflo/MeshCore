@@ -147,6 +147,7 @@ protected:
   bool getCADEnabled() const override {
     return _prefs.cad_enabled;
   }
+  bool isResendChannelActive() override;   // non-invasive resend LBT (preamble/RSSI, no CAD)
   int getAGCResetInterval() const override {
     return ((int)_prefs.agc_reset_interval) * 4000;   // milliseconds
   }

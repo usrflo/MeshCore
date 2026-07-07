@@ -91,6 +91,7 @@ public:
 
   virtual void queueOutbound(Packet* packet, uint8_t priority, uint32_t scheduled_for) = 0;
   virtual Packet* getNextOutbound(uint32_t now) = 0;    // by priority
+  virtual Packet* peekNextOutbound(uint32_t now) { return NULL; }   // same as getNextOutbound but non-consuming (default: none)
   virtual int getOutboundCount(uint32_t now) const = 0;
   virtual int getOutboundTotal() const = 0;
   virtual int getFreeCount() const = 0;
@@ -172,6 +173,11 @@ protected:
   virtual uint32_t getCADFailMaxDuration() const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
+  // Channel-busy check used ONLY for resend TX gating (direct packets with sending_attempts>0).
+  // Default falls back to CAD carrier sense; examples override with a NON-invasive check
+  // (preamble/header IRQ + RSSI margin) so RX stays open to overhear the downstream forward
+  // and cancel the resend. Non-const because _radio->isReceiving() is non-const.
+  virtual bool isResendChannelActive() { return _radio->isReceiving(); }
   virtual int getAGCResetInterval() const { return 0; }    // disabled by default
   virtual unsigned long getDutyCycleWindowMs() const { return 3600000; }
 
