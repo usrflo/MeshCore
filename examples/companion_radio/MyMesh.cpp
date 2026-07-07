@@ -126,6 +126,10 @@
 #define PUSH_CODE_CONTROL_DATA          0x8E   // v8+
 #define PUSH_CODE_CONTACT_DELETED       0x8F // used to notify client app of deleted contact when overwriting oldest
 #define PUSH_CODE_CONTACTS_FULL         0x90 // used to notify client app that contacts storage is full
+#define PUSH_CODE_CHANNEL_STATE         0x91   // periodic RF/channel telemetry pushed to the observer
+#ifndef CHANNEL_STATE_INTERVAL_MS
+  #define CHANNEL_STATE_INTERVAL_MS     250    // channel-state push cadence (ms)
+#endif
 
 #define ERR_CODE_UNSUPPORTED_CMD        1
 #define ERR_CODE_NOT_FOUND              2
@@ -305,6 +309,56 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 
     _serial->writeFrame(out_frame, i);
   }
+}
+
+void MyMesh::emitChannelState() {
+  // Periodic RF/channel telemetry for the observer (0x91), so a host can detect
+  // busy-mesh / interference situations and correlate them with lost packets.
+  // Layout: [0x91][millis LE x4][noise_floor i8][cur_rssi i8][flags u8][rx_errsΔ u16 LE][pktsΔ u16 LE]
+  //   flags bit0 = _radio->isReceiving() (LoRa preamble OR CAD busy) at the sample instant
+  //         bit1 = CAD-timeout rising edge since the last frame (the "Debug 2" signal)
+  // cur_rssi is the live channel energy (getCurrentRSSI); noise_floor is the
+  // calibrated quiet floor. The host derives the interference margin itself, so
+  // getInterferenceThreshold() need not be re-enabled here (avoids the
+  // currentRSSI() TX-gating problem, issue #2051).
+  uint32_t now_pkts = radio_driver.getPacketsRecv();
+  uint32_t now_errs = radio_driver.getPacketsRecvErrors();
+  uint16_t pkts_d = (uint16_t)(now_pkts - _prev_pkts_recv);
+  uint16_t errs_d = (uint16_t)(now_errs - _prev_pkts_errs);
+  _prev_pkts_recv = now_pkts;
+  _prev_pkts_errs = now_errs;
+
+  // Rising edge of ERR_EVENT_CAD_TIMEOUT without touching _err_flags itself.
+  uint8_t cad_to = 0;
+  if ((_err_flags & ERR_EVENT_CAD_TIMEOUT) && !(_prev_err_flags & ERR_EVENT_CAD_TIMEOUT)) cad_to = 1;
+  _prev_err_flags = _err_flags;
+
+  int i = 0;
+  out_frame[i++] = PUSH_CODE_CHANNEL_STATE;
+  uint32_t ms = _ms->getMillis();
+  out_frame[i++] = (uint8_t)(ms);
+  out_frame[i++] = (uint8_t)(ms >> 8);
+  out_frame[i++] = (uint8_t)(ms >> 16);
+  out_frame[i++] = (uint8_t)(ms >> 24);
+  out_frame[i++] = (int8_t)_radio->getNoiseFloor();
+  out_frame[i++] = (int8_t)radio_driver.getCurrentRSSI();
+  uint8_t flags = 0;
+  // Use isReceivingPacket() (preamble/header-valid IRQ flag — a plain register
+  // read) rather than _radio->isReceiving(). With the interference threshold
+  // disabled (==0), isReceiving() falls through to isChannelActive(), which runs
+  // a CAD scan and then RESTARTS RX — a momentary RX gap. Calling that every
+  // CHANNEL_STATE_INTERVAL_MS (e.g. 250 ms) punches 4 RX blind spots per second
+  // and lets real preambles slip through, i.e. the observer would miss exactly
+  // the packets it exists to capture. isReceivingPacket() is non-intrusive.
+  if (radio_driver.isReceivingPacket()) flags |= 0x01;
+  if (cad_to) flags |= 0x02;
+  out_frame[i++] = flags;
+  out_frame[i++] = (uint8_t)(pkts_d);
+  out_frame[i++] = (uint8_t)(pkts_d >> 8);
+  out_frame[i++] = (uint8_t)(errs_d);
+  out_frame[i++] = (uint8_t)(errs_d >> 8);
+
+  _serial->writeFrame(out_frame, i);
 }
 
 bool MyMesh::isAutoAddEnabled() const {
@@ -877,6 +931,10 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   next_ack_idx = 0;
   sign_data = NULL;
   dirty_contacts_expiry = 0;
+  _next_channel_state_ms = 0;
+  _prev_err_flags = 0;
+  _prev_pkts_recv = 0;
+  _prev_pkts_errs = 0;
   memset(advert_paths, 0, sizeof(advert_paths));
   memset(send_scope.key, 0, sizeof(send_scope.key));
   send_unscoped = false;
@@ -2223,6 +2281,14 @@ void MyMesh::checkSerialInterface() {
 
 void MyMesh::loop() {
   BaseChatMesh::loop();
+
+  // Periodic channel-state telemetry (0x91) for the observer: push RF/channel
+  // samples so a host can detect interference / busy-mesh windows. Only while a
+  // client app is connected (no point emitting into the void).
+  if (_serial && _serial->isConnected() && millisHasNowPassed(_next_channel_state_ms)) {
+    emitChannelState();
+    _next_channel_state_ms = futureMillis(CHANNEL_STATE_INTERVAL_MS);
+  }
 
   if (_cli_rescue) {
     checkCLIRescueCmd();

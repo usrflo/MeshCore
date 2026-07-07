@@ -118,6 +118,7 @@ protected:
   void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0) override;
 
   void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;
+  void emitChannelState();   // periodic 0x91 channel-state telemetry for the observer
   bool isAutoAddEnabled() const override;
   bool shouldAutoAddContactType(uint8_t type) const override;
   bool shouldOverwriteWhenFull() const override;
@@ -225,6 +226,12 @@ private:
   uint8_t *sign_data;
   uint32_t sign_data_len;
   unsigned long dirty_contacts_expiry;
+
+  // channel-state telemetry (0x91) state
+  unsigned long _next_channel_state_ms;
+  uint16_t _prev_err_flags;
+  uint32_t _prev_pkts_recv;
+  uint32_t _prev_pkts_errs;
 
   TransportKey send_scope;
 
