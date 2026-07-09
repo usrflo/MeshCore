@@ -91,6 +91,7 @@ public:
 
   virtual void queueOutbound(Packet* packet, uint8_t priority, uint32_t scheduled_for) = 0;
   virtual Packet* getNextOutbound(uint32_t now) = 0;    // by priority
+  virtual Packet* peekNextOutbound(uint32_t now) { return NULL; }   // non-consuming peek (default: none)
   virtual int getOutboundCount(uint32_t now) const = 0;
   virtual int getOutboundTotal() const = 0;
   virtual int getFreeCount() const = 0;
@@ -167,6 +168,9 @@ protected:
   virtual int calcRxDelay(float score, uint32_t air_time) const;
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
+  // Channel-busy check used for swarm-relay TX gating (non-invasive: examples override with a
+  // preamble + RSSI-margin check so RX stays open to overhear a cancel). Default falls back to CAD.
+  virtual bool isResendChannelActive() { return _radio->isReceiving(); }
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
   virtual int getAGCResetInterval() const { return 0; }    // disabled by default

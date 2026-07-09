@@ -50,11 +50,23 @@ public:
   uint8_t payload[MAX_PACKET_PAYLOAD];
   int8_t _snr;
 
+  // --- neighbour-swarm relay runtime state (NOT serialized; firmware-internal only) ---
+  bool is_swarm_relay;            // set when this packet is a queued swarm-relay retransmit (drives the non-invasive LBT gate in Dispatcher::checkSend)
+  uint32_t swarm_yield_deadline;  // RX_time + yield; a legit forward overheard before this keeps the relay; a relay overheard at/after this cancels it
+
   /**
    * \brief calculate the hash of payload + type
    * \param  dest_hash   destination to store the hash (must be MAX_HASH_SIZE bytes)
    */
   void calculatePacketHash(uint8_t* dest_hash) const;
+
+  /**
+   * \brief  Is this received packet a retry/forward of the given queued packet?
+   *         For non-TRACE: matches by payload hash (PATH-AGNOSTIC — two copies of the same
+   *         payload with different paths match). TRACE is excluded by the swarm relay, so it
+   *         returns false there.
+   */
+  bool isRetryMatch(const Packet* queued) const;
 
   /**
    * \returns  one of ROUTE_ values

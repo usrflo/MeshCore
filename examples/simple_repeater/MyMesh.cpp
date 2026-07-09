@@ -41,6 +41,10 @@
   #define TXT_ACK_DELAY 200
 #endif
 
+#ifndef RESEND_INTERFERENCE_MARGIN
+  #define RESEND_INTERFERENCE_MARGIN  12   // dB above noise floor that blocks a swarm-relay TX (non-invasive LBT)
+#endif
+
 #define FIRMWARE_VER_LEVEL       2
 
 #define REQ_TYPE_GET_STATUS         0x01 // same as _GET_STATS
@@ -549,6 +553,28 @@ uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
   return getRNG()->nextInt(0, 5*t + 1);
 }
 
+int8_t MyMesh::getNeighbourSNR(const uint8_t* hash, uint8_t hash_size) const {
+#if MAX_NEIGHBOURS
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    if (neighbours[i].id.pub_key[0] == 0) continue;   // empty/cleared slot
+    if (neighbours[i].id.isHashMatch(hash, hash_size)) return neighbours[i].snr;   // x4
+  }
+#endif
+  return INT8_MIN;   // not a (known) neighbour
+}
+
+bool MyMesh::isNeighbour(const uint8_t* hash, uint8_t hash_size) const {
+  return getNeighbourSNR(hash, hash_size) != INT8_MIN;
+}
+
+bool MyMesh::isResendChannelActive() {
+  // Non-invasive swarm-relay LBT (NO CAD, so RX stays open to overhear a downstream forward /
+  // another relay and cancel). Block on an in-flight preamble/header OR live energy well above
+  // the noise floor. Uses the concrete radio_driver (SimRadio / RadioLibWrappers).
+  int margin = (int)radio_driver.getCurrentRSSI() - _radio->getNoiseFloor();
+  return radio_driver.isReceivingPacket() || (margin >= RESEND_INTERFERENCE_MARGIN);
+}
+
 mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
   if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
     recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
@@ -827,19 +853,29 @@ void MyMesh::onControlDataRecv(mesh::Packet* packet) {
   }
 }
 
-void MyMesh::sendNodeDiscoverReq() {
+void MyMesh::sendNodeDiscoverReq(uint32_t delay_millis) {
   uint8_t data[10];
   data[0] = CTL_TYPE_NODE_DISCOVER_REQ; // prefix_only=0
   data[1] = (1 << ADV_TYPE_REPEATER);
   getRNG()->random(&data[2], 4); // tag
   memcpy(&pending_discover_tag, &data[2], 4);
-  pending_discover_until = futureMillis(60000);
+
+  // When scheduled in the future (e.g. fired after the boot advert), add a small random jitter
+  // so a fleet reboot doesn't synchronise all discover requests, and shift the reply window
+  // past the actual send time so responses arriving after the delayed TX aren't dropped.
+  uint32_t effective_delay = delay_millis;
+  if (delay_millis > 0) {
+    uint8_t jb[1]; getRNG()->random(jb, 1);
+    effective_delay += (uint32_t)jb[0] * 16u;   // 0..4080 ms jitter
+  }
+  pending_discover_until = futureMillis(60000 + effective_delay);
+
   uint32_t since = 0;
   memcpy(&data[6], &since, 4);
 
   auto pkt = createControlData(data, sizeof(data));
   if (pkt) {
-    sendZeroHop(pkt);
+    sendZeroHop(pkt, effective_delay);
   }
 }
 
@@ -893,6 +929,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.flood_max_advert = 8;
   _prefs.interference_threshold = 0; // disabled
   _prefs.cad_enabled = 0;            // hardware CAD before TX (off by default; 'set cad on')
+  _prefs.direct_swarm_fwd = 1;       // neighbour-swarm relay of overheard DIRECT packets (on for repeaters)
+  _prefs.swarm_relay_snr_a = 6 * 4;  // min R->A SNR (x4) for the swarm gate (cancel reliability)
+  _prefs.swarm_relay_snr_b = 6 * 4;  // min R->B SNR (x4) for the swarm gate (delivery)
 
   // bridge defaults
   _prefs.bridge_enabled = 1;    // enabled

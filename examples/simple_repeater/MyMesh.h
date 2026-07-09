@@ -160,6 +160,14 @@ protected:
     return _prefs.multi_acks;
   }
 
+  // --- neighbour-swarm relay ---
+  bool getDirectSwarmForward() const override { return _prefs.direct_swarm_fwd != 0; }
+  bool isNeighbour(const uint8_t* hash, uint8_t hash_size) const override;
+  int8_t getNeighbourSNR(const uint8_t* hash, uint8_t hash_size) const override;
+  int8_t getSwarmRelaySnrThreshA() const override { return _prefs.swarm_relay_snr_a; }
+  int8_t getSwarmRelaySnrThreshB() const override { return _prefs.swarm_relay_snr_b; }
+  bool isResendChannelActive() override;   // non-invasive LBT (no CAD) so RX stays open to cancel
+
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {
     sensors.setSettingValue("gps", _prefs.gps_enabled?"1":"0");
@@ -182,7 +190,7 @@ public:
   MyMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables);
 
   void begin(FILESYSTEM* fs);
-  void sendNodeDiscoverReq();
+  void sendNodeDiscoverReq(uint32_t delay_millis = 0);
   const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }

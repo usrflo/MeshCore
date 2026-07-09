@@ -445,6 +445,50 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 
 ---
 
+#### [Experimental] Enable or disable the neighbour-swarm relay for DIRECT traffic
+**Usage:**
+- `get direct.swarm`
+- `set direct.swarm <state>`
+
+**Parameters:**
+  - `state`: `on`|`off`
+
+**Default:** `on`
+
+**Note:** When enabled, a repeater that overhears a DIRECT packet it is **not** the next hop of may back up a stalled hop. It schedules a single shortened retransmit that mimics the addressed hop's forward (the first path entry is stripped), and fires only if the downstream hop does not progress. Relays are coordinated to avoid overload: listen-before-talk (RX stays open to overhear a cancel, no CAD), the neighbour with the best link to the next hop fires first, and each pending relay is cancelled when it overhears either the legitimate downstream forward or a competing neighbour's relay. Cancellation is path-aware and the helper re-arms per hop, so a single swarm node backs up each hop of a neighbouring chain at most once. Two SNR thresholds gate which neighbours participate — [`swarm.snr_a`](#experimental-view-or-change-the-swarm-relay-snr-a-threshold) (overload / cancel-reliability lever) and [`swarm.snr_b`](#experimental-view-or-change-the-swarm-relay-snr-b-threshold) (delivery lever).
+
+**Note:** **Repeater-only.** Only the simple repeater firmware opts into the swarm relay. On Room Servers, Sensors and Companions the relay never triggers even when this flag is on, so the setting is inert there. TRACE packets are excluded (they have their own per-hop handling). DIRECT ACKs **are** relayed too: they carry the reverse path, so when `direct.swarm` is on a repeater backs up a stalled hop on the ACK return path through the same bounded machinery — a silent repeater no longer breaks the ACK return either.
+
+---
+
+#### [Experimental] View or change the swarm relay SNR-A threshold
+**Usage:**
+- `get swarm.snr_a`
+- `set swarm.snr_a <db>`
+
+**Parameters:**
+- `db`: Minimum SNR (in dB) between the swarm helper and the first path entry — the addressed hop it overhears. Range `-30`..`30`.
+
+**Default:** `6`
+
+**Note:** The **overload / cancel-reliability lever** for the [`direct.swarm`](#experimental-enable-or-disable-the-neighbour-swarm-relay-for-direct-traffic) relay. Only neighbours whose link to the overheard hop meets this threshold arm a relay, which keeps the helper reliably able to hear — and cancel on — the legitimate downstream forward. Raise it to cut redundant fires on a congested mesh; lower it to let marginal helpers participate. Independent of `swarm.snr_b`.
+
+---
+
+#### [Experimental] View or change the swarm relay SNR-B threshold
+**Usage:**
+- `get swarm.snr_b`
+- `set swarm.snr_b <db>`
+
+**Parameters:**
+- `db`: Minimum SNR (in dB) between the swarm helper and the next hop toward the destination (position 2 of the overheard path). Range `-30`..`30`.
+
+**Default:** `6`
+
+**Note:** The **delivery lever** for the [`direct.swarm`](#experimental-enable-or-disable-the-neighbour-swarm-relay-for-direct-traffic) relay: it gates whether a helper's own retransmit can actually reach the next hop. Raise it to insist on a strong delivery link (fewer wasted fires); set it too high and useful helpers are excluded, hurting delivery on marginal topologies. Skipped on the short path where position 2 is already the destination (the helper→destination link is unknown).
+
+---
+
 #### View or change this node's advert path hash size
 **Usage:**
 - `get path.hash.mode`

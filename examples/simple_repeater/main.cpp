@@ -95,10 +95,25 @@ void setup() {
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
 #endif
 
+  // Boot TX timing: the self-advert announces us to the mesh; the discover request then
+  // collects fresh neighbour SNRs for the swarm relay. Sequencing them (rather than firing
+  // both at t=0) avoids a self-collision and means neighbours have just heard our advert
+  // when we ask them to respond. sendNodeDiscoverReq adds further jitter so a fleet reboot
+  // doesn't synchronise the discover storm.
+  const uint32_t BOOT_ADVERT_DELAY_MS = 16000;
+  const uint32_t BOOT_DISCOVER_MARGIN_MS = 5000;   // discover fires this long after the boot advert
+
   // send out initial zero hop Advertisement to the mesh
 #if ENABLE_ADVERT_ON_BOOT == 1
-  the_mesh.sendSelfAdvertisement(16000, false);
+  the_mesh.sendSelfAdvertisement(BOOT_ADVERT_DELAY_MS, false);
 #endif
+
+  // When neighbour-swarm relay is enabled, actively discover direct neighbours shortly after
+  // boot so the neighbour list — which the swarm relay relies on — is populated fast, instead
+  // of waiting for periodic adverts. Fired after the boot self-advert (see timing above).
+  if (the_mesh.getNodePrefs()->direct_swarm_fwd) {
+    the_mesh.sendNodeDiscoverReq(BOOT_ADVERT_DELAY_MS + BOOT_DISCOVER_MARGIN_MS);
+  }
 
   board.onBootComplete();
 }

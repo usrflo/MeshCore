@@ -65,6 +65,9 @@ struct NodePrefs { // persisted to file
   uint8_t path_hash_mode;   // which path mode to use when sending
   uint8_t loop_detect;
   uint8_t cad_enabled;      // hardware Channel Activity Detection before TX (boolean)
+  uint8_t direct_swarm_fwd; // neighbour-swarm opportunistic relay of overheard DIRECT packets (0=off, 1=on)
+  int8_t  swarm_relay_snr_a; // min R->pos1(A) SNR (x4) to swarm-relay: cancel-reliability (overload lever)
+  int8_t  swarm_relay_snr_b; // min R->pos2(B) SNR (x4) to swarm-relay: delivery (N/A if pos2==dest)
 };
 
 class CommonCLICallbacks {

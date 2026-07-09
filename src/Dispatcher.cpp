@@ -286,7 +286,11 @@ void Dispatcher::checkSend() {
   }
   
   if (!millisHasNowPassed(next_tx_time)) return;
-  if (_radio->isReceiving()) {
+  // Swarm-relay TX uses a NON-invasive channel-busy check (isResendChannelActive) so RX stays open
+  // to overhear a downstream forward / another relay and cancel; first sends & legit forwards keep CAD.
+  Packet* pending = _mgr->peekNextOutbound(_ms->getMillis());
+  bool channel_busy = (pending && pending->is_swarm_relay) ? isResendChannelActive() : _radio->isReceiving();
+  if (channel_busy) {
     if (cad_busy_start == 0) {
       cad_busy_start = _ms->getMillis();   // record when CAD busy state started
     }
@@ -360,6 +364,8 @@ Packet* Dispatcher::obtainNewPacket() {
   } else {
     pkt->payload_len = pkt->path_len = 0;
     pkt->_snr = 0;
+    pkt->is_swarm_relay = false;       // reset swarm-relay state on pool reuse
+    pkt->swarm_yield_deadline = 0;
   }
   return pkt;
 }

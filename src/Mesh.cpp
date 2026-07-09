@@ -1,10 +1,17 @@
 #include "Mesh.h"
 //#include <Arduino.h>
+#include <math.h>
 
 namespace mesh {
 
+// Priority for neighbour-swarm opportunistic relay of overheard DIRECT packets.
+// Lower number = higher priority. 1 = normal (below legit next-hop=0, above flood=2).
+#define SWARM_RELAY_PRIORITY 1
+
 void Mesh::begin() {
   Dispatcher::begin();
+  memset(_swarm_relay_hops, 0, sizeof(_swarm_relay_hops));
+  _swarm_relay_hops_next = 0;
 }
 
 void Mesh::loop() {
@@ -105,6 +112,14 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         uint32_t d = getDirectRetransmitDelay(pkt);
         return ACTION_RETRANSMIT_DELAYED(0, d);  // Routed traffic is HIGHEST priority 
       }
+    }
+    // Neighbour-swarm relay: R overheard a DIRECT packet it is NOT the next-hop of
+    // (TRACE is handled above). DIRECT ACKs are included: they carry the reverse path and are
+    // rescued through the same bounded machinery (one relay/hop, cancel-on-overheard via ack_crc
+    // isRetryMatch, SNR-gated, wasSeen) — controlled, not amplified.
+    if (!self_id.isHashMatch(pkt->path, pkt->getPathHashSize()) && getDirectSwarmForward()) {
+      DispatcherAction swarm = handleSwarmRelay(pkt);
+      if (swarm != ACTION_RELEASE) return swarm;
     }
     return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
   }
@@ -331,14 +346,141 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
   return action;
 }
 
-void Mesh::removeSelfFromPath(Packet* pkt) {
-  // remove our hash from 'path'
-  pkt->setPathHashCount(pkt->getPathHashCount() - 1);  // decrement the count
-
+void Mesh::trimPathFront(Packet* pkt, uint8_t entries) {
   uint8_t sz = pkt->getPathHashSize();
-  for (int k = 0; k < pkt->getPathHashCount()*sz; k += sz) {  // shuffle path by 1 'entry'
-    memcpy(&pkt->path[k], &pkt->path[k + sz], sz);
+  uint8_t count = pkt->getPathHashCount();
+  if (entries == 0 || entries > count) return;   // defensive
+  uint8_t remaining = count - entries;
+  if (remaining > 0) {
+    memmove(pkt->path, &pkt->path[entries * sz], (uint16_t)remaining * sz);   // shift survivors to the front
   }
+  pkt->setPathHashCount(remaining);
+}
+
+void Mesh::removeSelfFromPath(Packet* pkt) {
+  // remove the leading path entry (position 0): for a legit next-hop that is self,
+  // for a swarm "imitate the forwarder" relay it is the addressed successor.
+  trimPathFront(pkt, 1);
+}
+
+void Mesh::recordRelayHop(const uint8_t* hash, uint8_t planned_count) {
+  SwarmRelayHop& e = _swarm_relay_hops[_swarm_relay_hops_next];
+  memcpy(e.hash, hash, MAX_HASH_SIZE);
+  e.planned_count = planned_count;
+  e.used = 1;
+  _swarm_relay_hops_next = (_swarm_relay_hops_next + 1) % SWARM_RELAY_HOP_HISTORY;
+}
+
+bool Mesh::hasRelayedHop(const uint8_t* hash, uint8_t planned_count) const {
+  for (int i = 0; i < SWARM_RELAY_HOP_HISTORY; i++) {
+    const SwarmRelayHop& e = _swarm_relay_hops[i];
+    if (e.used && e.planned_count == planned_count && memcmp(e.hash, hash, MAX_HASH_SIZE) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint32_t Mesh::getSwarmRetransmitDelay(const Packet* packet) {
+  uint32_t airtime = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
+  uint32_t yield = 3 * airtime;   // clear the addressed successor's legit forward window
+
+  // SNR-to-target ordering: the neighbour with the BEST R->pos2 link fires first, so a
+  // worse-link neighbour cannot fire first, fail to reach pos2, and cancel the better one.
+  // After trimPathFront(1), packet->path[0] is pos2 (the relay's target).
+  uint32_t slot;
+  int8_t snr_b = getNeighbourSNR(packet->path, packet->getPathHashSize());
+  if (snr_b != INT8_MIN) {
+    float score = ((float)snr_b) / 4.0f;
+    int d = (int)((pow(10, 0.85f - score) - 1.0f) * (float)airtime);   // FLOOD's calcRxDelay form
+    slot = (d < 0) ? 0 : (uint32_t)d;                                  // best SNR -> smallest slot
+  } else {
+    slot = _rng->nextInt(0, 5 * airtime + 1);   // pos2==dest (short path): R->dest SNR unknown -> random
+  }
+  uint32_t jitter = _rng->nextInt(0, airtime / 2 + 1);   // tie-break for equal-SNR neighbours
+  return yield + slot + jitter;
+}
+
+// R overheard a DIRECT data packet it is NOT the next-hop of. Schedule ONE shortened retransmit
+// (strip pos1, imitating A's forward), path-aware-cancel it on a downstream forward / another
+// relay, and re-arm for the next hop — each (payload, hop) at most once. See plan §5.
+DispatcherAction Mesh::handleSwarmRelay(Packet* pkt) {
+  uint8_t sz = pkt->getPathHashSize();
+  uint8_t c = pkt->getPathHashCount();           // overheard copy's path count
+  uint32_t now = _ms->getMillis();
+
+  // (1) Cancel scan: drop a pending swarm relay if this overheard copy makes it redundant.
+  for (int i = _mgr->getOutboundTotal() - 1; i >= 0; i--) {
+    Packet* queued = _mgr->getOutboundByIdx(i);
+    if (queued && queued->is_swarm_relay && pkt->isRetryMatch(queued)) {
+      uint8_t pc = queued->getPathHashCount();   // pending relay's planned_count
+      bool short_path = (pc <= 1);   // pc==1 (short) or pc==0 (final-hop relay delivering [] -> dest)
+      bool cancel = false;
+      if (c < pc) {
+        cancel = true;                                  // downstream forward (progression past the relay's target)
+      } else if (c == pc) {
+        if (short_path) {
+          cancel = true;                                // short path: A's forward = dest reached (or another relay)
+        } else if (now >= queued->swarm_yield_deadline) {
+          cancel = true;                                // long path: same-path copy AFTER yield = another neighbour's relay
+        }
+        // else (long path, c==pc, during yield): A's legit forward — next hop still pending, KEEP
+      }
+      // c > pc: the original S tx (or a longer-path copy) — ignore
+      if (cancel) {
+        Packet* removed = _mgr->removeOutboundByIdx(i);
+        if (removed) _mgr->free(removed);
+        MESH_DEBUG_PRINTLN("%s Mesh::handleSwarmRelay(): swarm relay canceled (pc=%d, c=%d)", getLogDateTime(), pc, c);
+      }
+      break;   // at most one pending swarm relay per payload
+    }
+  }
+
+  // (2) One-pending guard: if a swarm relay for this payload is still queued, don't schedule another.
+  for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
+    Packet* queued = _mgr->getOutboundByIdx(i);
+    if (queued && queued->is_swarm_relay && pkt->isRetryMatch(queued)) {
+      return ACTION_RELEASE;   // still pending (kept above) — wait for it to fire or be cancelled
+    }
+  }
+
+  // (3) Re-arm gate: schedule a relay for THIS overheard copy (the next hop).
+  if (c < 1) return ACTION_RELEASE;   // need >=1 hop to imitate; the c==0 dest-reached copy has none
+
+  // Self-in-path exclusion: if R itself sits at a later hop (pos1..count-1) of the overheard
+  // packet, do NOT swarm-relay. The legit chain will deliver to R anyway, and R's own relay
+  // could never be cancelled: every cancelling copy (a shorter-path forward) is addressed TO R,
+  // so R consumes it via the next-hop forward path and never reaches the cancel scan above.
+  // pos0 (the addressed next-hop) is already excluded at the onRecvPacket entry.
+  for (uint8_t i = 1; i < c; i++) {
+    if (self_id.isHashMatch(&pkt->path[(uint16_t)i * sz], sz)) return ACTION_RELEASE;
+  }
+
+  uint8_t new_pc = c - 1;
+  uint8_t hash[MAX_HASH_SIZE];
+  pkt->calculatePacketHash(hash);
+  if (hasRelayedHop(hash, new_pc)) return ACTION_RELEASE;   // already covered this (payload, hop)
+
+  // positional + SNR gate: pos1(A) must be a neighbour (hear A to cancel); pos2 must be dest or a neighbour
+  const uint8_t* pos1 = &pkt->path[0];
+  if (!isNeighbour(pos1, sz)) return ACTION_RELEASE;
+  if (getNeighbourSNR(pos1, sz) < getSwarmRelaySnrThreshA()) return ACTION_RELEASE;
+
+  bool short_path = (c <= 2);   // c<=2: pos2 is dest (no pos2 repeater to reach-check)
+  if (!short_path) {
+    const uint8_t* pos2 = &pkt->path[sz];
+    if (!isNeighbour(pos2, sz)) return ACTION_RELEASE;       // R's relay wouldn't reach pos2
+    if (getNeighbourSNR(pos2, sz) < getSwarmRelaySnrThreshB()) return ACTION_RELEASE;
+  }
+
+  // (4) Schedule: strip pos1 (imitate A's forward), set swarm state, record the hop.
+  trimPathFront(pkt, 1);
+  pkt->is_swarm_relay = true;
+  uint32_t airtime = _radio->getEstAirtimeFor(pkt->getPathByteLen() + pkt->payload_len + 2);
+  pkt->swarm_yield_deadline = now + 3 * airtime;   // yield window (shared anchor = overheard S->A TX)
+  recordRelayHop(hash, new_pc);
+  MESH_DEBUG_PRINTLN("%s Mesh::handleSwarmRelay(): swarm relay scheduled (pc=%d, c=%d)", getLogDateTime(), new_pc, c);
+  return ACTION_RETRANSMIT_DELAYED(SWARM_RELAY_PRIORITY, getSwarmRetransmitDelay(pkt));
 }
 
 DispatcherAction Mesh::routeRecvPacket(Packet* packet) {

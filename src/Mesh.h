@@ -10,6 +10,17 @@ public:
   uint8_t secret[PUB_KEY_SIZE];
 };
 
+// Neighbour-swarm relay: per-(payload, hop) dedup so a node re-arms across hops of the same
+// payload but never relays the same (payload, planned_count) twice. Small LRU ring.
+#ifndef SWARM_RELAY_HOP_HISTORY
+  #define SWARM_RELAY_HOP_HISTORY 8
+#endif
+struct SwarmRelayHop {
+  uint8_t hash[MAX_HASH_SIZE];
+  uint8_t planned_count;
+  uint8_t used;
+};
+
 /**
  * An abstraction of the data tables needed to be maintained
 */
@@ -30,9 +41,17 @@ class Mesh : public Dispatcher {
   MeshTables* _tables;
 
   void removeSelfFromPath(Packet* packet);
+  void trimPathFront(Packet* pkt, uint8_t entries);   // remove N leading path-hash entries
   void routeDirectRecvAcks(Packet* packet, uint32_t delay_millis);
   //void routeRecvAcks(Packet* packet, uint32_t delay_millis);
   DispatcherAction forwardMultipartDirect(Packet* pkt);
+
+  // --- neighbour-swarm relay (overheard DIRECT packets) ---
+  DispatcherAction handleSwarmRelay(Packet* pkt);     // schedule/cancel/re-arm a swarm relay
+  SwarmRelayHop _swarm_relay_hops[SWARM_RELAY_HOP_HISTORY];
+  uint8_t _swarm_relay_hops_next;
+  void recordRelayHop(const uint8_t* hash, uint8_t planned_count);
+  bool hasRelayedHop(const uint8_t* hash, uint8_t planned_count) const;
 
 protected:
   DispatcherAction onRecvPacket(Packet* pkt) override;
@@ -70,6 +89,17 @@ protected:
    * \returns  number of extra (Direct) ACK transmissions wanted.
    */
   virtual uint8_t getExtraAckTransmitCount() const;
+
+  // --- neighbour-swarm relay hooks (sub-classes opt in via getDirectSwarmForward) ---
+  virtual bool getDirectSwarmForward() const { return false; }       // off by default
+  // Is the node with this hash a direct neighbour? (and its link SNR x4, or INT8_MIN if unknown)
+  virtual bool isNeighbour(const uint8_t* hash, uint8_t hash_size) const { return false; }
+  virtual int8_t getNeighbourSNR(const uint8_t* hash, uint8_t hash_size) const { return INT8_MIN; }
+  // Min R->A / R->B SNR (x4) for the swarm gate; base defaults, MyMesh reads _prefs.
+  virtual int8_t getSwarmRelaySnrThreshA() const { return 6 * 4; }
+  virtual int8_t getSwarmRelaySnrThreshB() const { return 6 * 4; }
+  // Delay before a scheduled swarm relay fires (yield + SNR-to-target slot + jitter).
+  virtual uint32_t getSwarmRetransmitDelay(const Packet* packet);
 
   /**
    * \brief  Perform search of local DB of peers/contacts.

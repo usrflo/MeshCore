@@ -93,7 +93,10 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     file.read((uint8_t *)&_prefs->flood_max_advert, sizeof(_prefs->flood_max_advert));             // 292
     file.read((uint8_t *)&_prefs->radio_fem_rxgain, sizeof(_prefs->radio_fem_rxgain));             // 293
     file.read((uint8_t *)&_prefs->cad_enabled, sizeof(_prefs->cad_enabled));                       // 294
-    // next: 295
+    file.read((uint8_t *)&_prefs->direct_swarm_fwd, sizeof(_prefs->direct_swarm_fwd));             // 295
+    file.read((uint8_t *)&_prefs->swarm_relay_snr_a, sizeof(_prefs->swarm_relay_snr_a));           // 296
+    file.read((uint8_t *)&_prefs->swarm_relay_snr_b, sizeof(_prefs->swarm_relay_snr_b));           // 297
+    // next: 298
 
     // sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0, 20.0f);
@@ -125,6 +128,9 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     _prefs->rx_boosted_gain = constrain(_prefs->rx_boosted_gain, 0, 1); // boolean
     _prefs->radio_fem_rxgain = constrain(_prefs->radio_fem_rxgain, 0, 1); // boolean
     _prefs->cad_enabled = constrain(_prefs->cad_enabled, 0, 1); // boolean
+    _prefs->direct_swarm_fwd = constrain(_prefs->direct_swarm_fwd, 0, 1); // boolean
+    _prefs->swarm_relay_snr_a = constrain(_prefs->swarm_relay_snr_a, -120, 120); // SNR x4, ~-30..30 dB
+    _prefs->swarm_relay_snr_b = constrain(_prefs->swarm_relay_snr_b, -120, 120); // SNR x4, ~-30..30 dB
 
     file.close();
   }
@@ -190,7 +196,10 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->flood_max_advert, sizeof(_prefs->flood_max_advert));             // 292
     file.write((uint8_t *)&_prefs->radio_fem_rxgain, sizeof(_prefs->radio_fem_rxgain));             // 293
     file.write((uint8_t *)&_prefs->cad_enabled, sizeof(_prefs->cad_enabled));                       // 294
-    // next: 295
+    file.write((uint8_t *)&_prefs->direct_swarm_fwd, sizeof(_prefs->direct_swarm_fwd));             // 295
+    file.write((uint8_t *)&_prefs->swarm_relay_snr_a, sizeof(_prefs->swarm_relay_snr_a));           // 296
+    file.write((uint8_t *)&_prefs->swarm_relay_snr_b, sizeof(_prefs->swarm_relay_snr_b));           // 297
+    // next: 298
 
     file.close();
   }
@@ -510,6 +519,18 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->cad_enabled = memcmp(&config[4], "on", 2) == 0;
     savePrefs();
     strcpy(reply, "OK");
+  } else if (memcmp(config, "direct.swarm ", 13) == 0) {
+    _prefs->direct_swarm_fwd = memcmp(&config[13], "on", 2) == 0;
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "swarm.snr_a ", 12) == 0) {
+    int db = atoi(&config[12]);
+    if (db >= -30 && db <= 30) { _prefs->swarm_relay_snr_a = (int8_t)(db * 4); savePrefs(); strcpy(reply, "OK"); }
+    else strcpy(reply, "Error, must be -30..30 dB");
+  } else if (memcmp(config, "swarm.snr_b ", 12) == 0) {
+    int db = atoi(&config[12]);
+    if (db >= -30 && db <= 30) { _prefs->swarm_relay_snr_b = (int8_t)(db * 4); savePrefs(); strcpy(reply, "OK"); }
+    else strcpy(reply, "Error, must be -30..30 dB");
   } else if (memcmp(config, "agc.reset.interval ", 19) == 0) {
     _prefs->agc_reset_interval = atoi(&config[19]) / 4;
     savePrefs();
@@ -812,6 +833,12 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %d", (uint32_t) _prefs->interference_threshold);
   } else if (memcmp(config, "cad", 3) == 0) {
     sprintf(reply, "> %s", _prefs->cad_enabled ? "on" : "off");
+  } else if (memcmp(config, "direct.swarm", 12) == 0) {
+    sprintf(reply, "> %s", _prefs->direct_swarm_fwd ? "on" : "off");
+  } else if (memcmp(config, "swarm.snr_a", 11) == 0) {
+    sprintf(reply, "> %d dB", (int)_prefs->swarm_relay_snr_a / 4);
+  } else if (memcmp(config, "swarm.snr_b", 11) == 0) {
+    sprintf(reply, "> %d dB", (int)_prefs->swarm_relay_snr_b / 4);
   } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
     sprintf(reply, "> %d", ((uint32_t) _prefs->agc_reset_interval) * 4);
   } else if (memcmp(config, "multi.acks", 10) == 0) {

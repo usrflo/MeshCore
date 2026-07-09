@@ -8,6 +8,26 @@ Packet::Packet() {
   header = 0;
   path_len = 0;
   payload_len = 0;
+  _snr = 0;
+  is_swarm_relay = false;
+  swarm_yield_deadline = 0;
+}
+
+bool Packet::isRetryMatch(const Packet* queued) const {
+  // Only packets of the same payload type can be retries of each other.
+  if (this->getPayloadType() != queued->getPayloadType()) return false;
+
+  // TRACE is excluded by the neighbour-swarm relay (handled separately in Mesh::onRecvPacket),
+  // so it never reaches this cancel scan. Return false defensively.
+  if (this->getPayloadType() == PAYLOAD_TYPE_TRACE) return false;
+
+  // Default: compare payload hashes (path-agnostic — two copies of the same payload with
+  // different paths, e.g. A's forward [B,dest] vs a relay [B,dest] vs B's forward [dest],
+  // all share one payload hash and therefore match).
+  uint8_t h1[MAX_HASH_SIZE], h2[MAX_HASH_SIZE];
+  this->calculatePacketHash(h1);
+  queued->calculatePacketHash(h2);
+  return memcmp(h1, h2, MAX_HASH_SIZE) == 0;
 }
 
 bool Packet::isValidPathLen(uint8_t path_len) {
