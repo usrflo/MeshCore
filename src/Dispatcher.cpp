@@ -16,6 +16,10 @@ namespace mesh {
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
 #endif
 
+#ifndef DWELL_SAMPLE_INTERVAL
+  #define DWELL_SAMPLE_INTERVAL        50      // ms between quiet-dwell RSSI probes
+#endif
+
 void Dispatcher::begin() {
   n_sent_flood = n_sent_direct = 0;
   n_recv_flood = n_recv_direct = 0;
@@ -70,6 +74,13 @@ void Dispatcher::loop() {
     next_floor_calib_time = futureMillis(NOISE_FLOOR_CALIB_INTERVAL);
   }
   _radio->loop();
+
+  // Quiet-dwell sampling: periodically probe live channel energy (cheap RSSI-margin, no CAD,
+  // RX stays open) so a recent interferer can defer the next TX into a genuinely quiet slot.
+  if (getQuietDwellMs() > 0 && _radio->isInRecvMode() && millisHasNowPassed(next_dwell_sample_ms)) {
+    next_dwell_sample_ms = futureMillis(DWELL_SAMPLE_INTERVAL);
+    if (_radio->isChannelNoisy()) last_channel_noisy_ms = _ms->getMillis();
+  }
 
   // check for radio 'stuck' in mode other than Rx
   bool is_recv = _radio->isInRecvMode();
@@ -303,6 +314,18 @@ void Dispatcher::checkSend() {
     }
   }
   cad_busy_start = 0;  // reset busy state
+
+  // Quiet-dwell gate: even if the channel is instantaneously free, defer if it was noisy within
+  // the last dwell window — let a recent interferer clear so the TX (incl. resends/forwards)
+  // lands in a quiet slot. getCADFailMaxDuration() caps starvation on a persistently loud channel.
+  uint32_t dwell = getQuietDwellMs();
+  if (dwell > 0 && last_channel_noisy_ms > 0) {
+    unsigned long since = _ms->getMillis() - last_channel_noisy_ms;
+    if (since < dwell && since < getCADFailMaxDuration()) {
+      next_tx_time = futureMillis((unsigned long)(dwell - since));
+      return;
+    }
+  }
 
   outbound = _mgr->getNextOutbound(_ms->getMillis());
   if (outbound) {

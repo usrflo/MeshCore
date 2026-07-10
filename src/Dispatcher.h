@@ -6,6 +6,13 @@
 #include <Utils.h>
 #include <string.h>
 
+// Quiet-dwell TX gate — always on with a fixed value (no runtime configuration).
+// How long the channel must be quiet (energy below the dwell margin) before a TX is allowed,
+// so a recent interferer clears and the TX lands in a quiet slot.
+#ifndef QUIET_DWELL_MS_DEFAULT
+  #define QUIET_DWELL_MS_DEFAULT  300
+#endif
+
 namespace mesh {
 
 /**
@@ -76,6 +83,14 @@ public:
   */
   virtual bool isReceiving() { return false; }
 
+  /**
+   * \brief  Cheap, non-invasive live-energy probe for the quiet-dwell gate: is the channel
+   *         currently carrying energy above a fixed margin over the noise floor (RSSI-margin,
+   *         no CAD — RX stays open)? Default false (unknown / unsupported) so mock/simulated
+   *         radios never trip the gate.
+  */
+  virtual bool isChannelNoisy() { return false; }
+
   virtual float getLastRSSI() const { return 0; }
   virtual float getLastSNR() const { return 0; }
 };
@@ -122,6 +137,8 @@ class Dispatcher {
   unsigned long cad_busy_start;
   unsigned long radio_nonrx_start;
   unsigned long next_floor_calib_time, next_agc_reset_time;
+  unsigned long last_channel_noisy_ms;    // 0 = channel has not been seen noisy since boot
+  unsigned long next_dwell_sample_ms;     // throttles the isChannelNoisy() RSSI probe
   bool  prev_isrecv_mode;
   uint32_t n_sent_flood, n_sent_direct;
   uint32_t n_recv_flood, n_recv_direct;
@@ -146,6 +163,8 @@ protected:
     next_tx_time = ms.getMillis();
     cad_busy_start = 0;
     next_floor_calib_time = next_agc_reset_time = 0;
+    last_channel_noisy_ms = 0;
+    next_dwell_sample_ms = 0;
     _err_flags = 0;
     radio_nonrx_start = 0;
     prev_isrecv_mode = true;
@@ -168,6 +187,7 @@ protected:
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
+  virtual uint32_t getQuietDwellMs() const { return QUIET_DWELL_MS_DEFAULT; }    // quiet-dwell TX gate (always on, fixed)
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
   virtual int getAGCResetInterval() const { return 0; }    // disabled by default
   virtual unsigned long getDutyCycleWindowMs() const { return 3600000; }
