@@ -201,6 +201,13 @@ bool RadioLibWrapper::isChannelActive() {
   return false;
 }
 
+bool RadioLibWrapper::isChannelNoisy() {
+  // Same RSSI-margin condition as isChannelActive()'s int.thresh branch, but WITHOUT CAD and
+  // excluding an in-progress legit RX — a cheap idle-energy probe that keeps RX open. Used for
+  // quiet-dwell TX gating so a legitimate packet being received doesn't itself trip the gate.
+  return (_threshold != 0 && !isReceivingPacket() && getCurrentRSSI() > _noise_floor + _threshold);
+}
+
 float RadioLibWrapper::getLastRSSI() const {
   return _radio->getRSSI();
 }

@@ -3,6 +3,17 @@
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
 
+// Quiet-dwell TX gate tuning (companion has no text CLI — adjust here and reflash to A/B test).
+// Threshold = dB above the calibrated noise floor at which the channel counts as "noisy"; 0 = off.
+// Quiet dwell = how long the channel must be quiet before a TX is allowed, in ms; 0 = off.
+// NOTE: setting the threshold non-zero also enables RSSI-margin gating in the existing LBT path.
+#ifndef COMPANION_INTERFERENCE_THRESHOLD
+  #define COMPANION_INTERFERENCE_THRESHOLD  15
+#endif
+#ifndef COMPANION_QUIET_DWELL_MS
+  #define COMPANION_QUIET_DWELL_MS           300
+#endif
+
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
 #define CMD_SEND_CHANNEL_TXT_MSG      3
@@ -259,10 +270,13 @@ float MyMesh::getAirtimeBudgetFactor() const {
 }
 
 int MyMesh::getInterferenceThreshold() const {
-  return 0; // disabled for now, until currentRSSI() problem is resolved
+  return COMPANION_INTERFERENCE_THRESHOLD;  // dB above noise floor; 0 = interference detection off
 }
 bool MyMesh::getCADEnabled() const {
   return true; // hardware CAD before TX (no CLI toggle on companion; enabled by default)
+}
+uint32_t MyMesh::getQuietDwellMs() const {
+  return COMPANION_QUIET_DWELL_MS;   // ms; 0 = quiet-dwell TX gate off
 }
 
 int MyMesh::calcRxDelay(float score, uint32_t air_time) const {

@@ -32,6 +32,7 @@ public:
   void onSendFinished() override;
   bool isInRecvMode() const override;
   bool isChannelActive();
+  bool isChannelNoisy() override;
 
   bool isReceiving() override {
     if (isReceivingPacket()) return true;

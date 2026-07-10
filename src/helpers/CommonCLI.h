@@ -65,6 +65,7 @@ struct NodePrefs { // persisted to file
   uint8_t path_hash_mode;   // which path mode to use when sending
   uint8_t loop_detect;
   uint8_t cad_enabled;      // hardware Channel Activity Detection before TX (boolean)
+  uint8_t quiet_dwell;       // quiet-dwell TX gate, units of 10 ms (0 = off; e.g. 30 = 300 ms)
 };
 
 class CommonCLICallbacks {

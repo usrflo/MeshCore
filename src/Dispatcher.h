@@ -76,6 +76,14 @@ public:
   */
   virtual bool isReceiving() { return false; }
 
+  /**
+   * \brief  Cheap, non-invasive live-energy probe: is the channel currently carrying energy
+   *         above the interference threshold (RSSI-margin, no CAD — RX stays open)?
+   *         Default false (unknown / unsupported) so the quiet-dwell gate never trips on
+   *         mock/simulated radios.
+  */
+  virtual bool isChannelNoisy() { return false; }
+
   virtual float getLastRSSI() const { return 0; }
   virtual float getLastSNR() const { return 0; }
 };
@@ -122,6 +130,8 @@ class Dispatcher {
   unsigned long cad_busy_start;
   unsigned long radio_nonrx_start;
   unsigned long next_floor_calib_time, next_agc_reset_time;
+  unsigned long last_channel_noisy_ms;    // 0 = channel has not been seen noisy since boot
+  unsigned long next_dwell_sample_ms;     // throttles the isChannelNoisy() RSSI probe
   bool  prev_isrecv_mode;
   uint32_t n_sent_flood, n_sent_direct;
   uint32_t n_recv_flood, n_recv_direct;
@@ -146,6 +156,8 @@ protected:
     next_tx_time = ms.getMillis();
     cad_busy_start = 0;
     next_floor_calib_time = next_agc_reset_time = 0;
+    last_channel_noisy_ms = 0;
+    next_dwell_sample_ms = 0;
     _err_flags = 0;
     radio_nonrx_start = 0;
     prev_isrecv_mode = true;
@@ -168,6 +180,7 @@ protected:
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
+  virtual uint32_t getQuietDwellMs() const { return 0; }    // 0 = quiet-dwell TX gate disabled
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
   virtual int getAGCResetInterval() const { return 0; }    // disabled by default
   virtual unsigned long getDutyCycleWindowMs() const { return 3600000; }
