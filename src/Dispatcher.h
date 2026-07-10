@@ -6,6 +6,13 @@
 #include <Utils.h>
 #include <string.h>
 
+// Quiet-dwell TX gate — always on with a fixed value (no runtime configuration).
+// How long the channel must be quiet (energy below the dwell margin) before a TX is allowed,
+// so a recent interferer clears and the TX lands in a quiet slot.
+#ifndef QUIET_DWELL_MS_DEFAULT
+  #define QUIET_DWELL_MS_DEFAULT  300
+#endif
+
 namespace mesh {
 
 /**
@@ -77,10 +84,10 @@ public:
   virtual bool isReceiving() { return false; }
 
   /**
-   * \brief  Cheap, non-invasive live-energy probe: is the channel currently carrying energy
-   *         above the interference threshold (RSSI-margin, no CAD — RX stays open)?
-   *         Default false (unknown / unsupported) so the quiet-dwell gate never trips on
-   *         mock/simulated radios.
+   * \brief  Cheap, non-invasive live-energy probe for the quiet-dwell gate: is the channel
+   *         currently carrying energy above a fixed margin over the noise floor (RSSI-margin,
+   *         no CAD — RX stays open)? Default false (unknown / unsupported) so mock/simulated
+   *         radios never trip the gate.
   */
   virtual bool isChannelNoisy() { return false; }
 
@@ -180,7 +187,7 @@ protected:
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
-  virtual uint32_t getQuietDwellMs() const { return 0; }    // 0 = quiet-dwell TX gate disabled
+  virtual uint32_t getQuietDwellMs() const { return QUIET_DWELL_MS_DEFAULT; }    // quiet-dwell TX gate (always on, fixed)
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
   virtual int getAGCResetInterval() const { return 0; }    // disabled by default
   virtual unsigned long getDutyCycleWindowMs() const { return 3600000; }

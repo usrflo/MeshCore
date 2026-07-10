@@ -93,8 +93,7 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     file.read((uint8_t *)&_prefs->flood_max_advert, sizeof(_prefs->flood_max_advert));             // 292
     file.read((uint8_t *)&_prefs->radio_fem_rxgain, sizeof(_prefs->radio_fem_rxgain));             // 293
     file.read((uint8_t *)&_prefs->cad_enabled, sizeof(_prefs->cad_enabled));                       // 294
-    file.read((uint8_t *)&_prefs->quiet_dwell, sizeof(_prefs->quiet_dwell));                       // 295
-    // next: 296
+    // next: 295
 
     // sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0, 20.0f);
@@ -126,7 +125,6 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     _prefs->rx_boosted_gain = constrain(_prefs->rx_boosted_gain, 0, 1); // boolean
     _prefs->radio_fem_rxgain = constrain(_prefs->radio_fem_rxgain, 0, 1); // boolean
     _prefs->cad_enabled = constrain(_prefs->cad_enabled, 0, 1); // boolean
-    _prefs->quiet_dwell = constrain(_prefs->quiet_dwell, 0, 200);               // 0..2000 ms (10-ms units)
 
     file.close();
   }
@@ -192,8 +190,7 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->flood_max_advert, sizeof(_prefs->flood_max_advert));             // 292
     file.write((uint8_t *)&_prefs->radio_fem_rxgain, sizeof(_prefs->radio_fem_rxgain));             // 293
     file.write((uint8_t *)&_prefs->cad_enabled, sizeof(_prefs->cad_enabled));                       // 294
-    file.write((uint8_t *)&_prefs->quiet_dwell, sizeof(_prefs->quiet_dwell));                       // 295
-    // next: 296
+    // next: 295
 
     file.close();
   }
@@ -509,10 +506,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->interference_threshold = atoi(&config[11]);
     savePrefs();
     strcpy(reply, "OK");
-  } else if (memcmp(config, "quiet.dwell ", 12) == 0) {
-    int v = atoi(&config[12]);   // units of 10 ms (0 = off, e.g. 30 = 300 ms)
-    if (v >= 0 && v <= 200) { _prefs->quiet_dwell = (uint8_t)v; savePrefs(); strcpy(reply, "OK"); }
-    else strcpy(reply, "Error, must be 0..200 (x10ms, 0=off)");
   } else if (memcmp(config, "cad ", 4) == 0) {
     _prefs->cad_enabled = memcmp(&config[4], "on", 2) == 0;
     savePrefs();
@@ -817,8 +810,6 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %s", StrHelper::ftoa(_prefs->airtime_factor));
   } else if (memcmp(config, "int.thresh", 10) == 0) {
     sprintf(reply, "> %d", (uint32_t) _prefs->interference_threshold);
-  } else if (memcmp(config, "quiet.dwell", 10) == 0) {
-    sprintf(reply, "> %lu ms", (unsigned long)_prefs->quiet_dwell * 10);
   } else if (memcmp(config, "cad", 3) == 0) {
     sprintf(reply, "> %s", _prefs->cad_enabled ? "on" : "off");
   } else if (memcmp(config, "agc.reset.interval", 18) == 0) {

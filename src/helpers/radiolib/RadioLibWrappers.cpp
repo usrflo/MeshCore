@@ -10,6 +10,7 @@
 
 #define NUM_NOISE_FLOOR_SAMPLES  64
 #define SAMPLING_THRESHOLD  14
+#define DWELL_RSSI_MARGIN  15      // dB above calibrated noise floor at which the channel counts as "noisy" for the quiet-dwell gate
 
 static volatile uint8_t state = STATE_IDLE;
 
@@ -184,8 +185,11 @@ int16_t RadioLibWrapper::performChannelScan() {
 }
 
 bool RadioLibWrapper::isChannelActive() {
-  // int.thresh: RSSI-based interference detection (relative to noise floor)
-  if (_threshold != 0 && getCurrentRSSI() > _noise_floor + _threshold) return true;
+  // RSSI-margin: any live energy above the calibrated noise floor counts as channel busy.
+  // Modulation-blind, so it also catches non-LoRa interferers and mid-packet/collision energy
+  // that CAD (a LoRa-preamble detector) misses. Reuses the quiet-dwell gate's fixed margin, so
+  // instantaneous LBT and the dwell gate share one definition of "channel occupied".
+  if (getCurrentRSSI() > _noise_floor + DWELL_RSSI_MARGIN) return true;
 
   // cad: hardware channel activity detection
   if (_cad_enabled) {
@@ -202,10 +206,11 @@ bool RadioLibWrapper::isChannelActive() {
 }
 
 bool RadioLibWrapper::isChannelNoisy() {
-  // Same RSSI-margin condition as isChannelActive()'s int.thresh branch, but WITHOUT CAD and
-  // excluding an in-progress legit RX — a cheap idle-energy probe that keeps RX open. Used for
-  // quiet-dwell TX gating so a legitimate packet being received doesn't itself trip the gate.
-  return (_threshold != 0 && !isReceivingPacket() && getCurrentRSSI() > _noise_floor + _threshold);
+  // Cheap idle-energy probe for the quiet-dwell gate: channel counts as noisy when live RSSI
+  // exceeds the calibrated noise floor by a fixed margin — independent of the (configurable)
+  // interference threshold, so the gate is always active with no per-device config. Excludes an
+  // in-progress legit RX (no CAD, RX stays open).
+  return (!isReceivingPacket() && getCurrentRSSI() > _noise_floor + DWELL_RSSI_MARGIN);
 }
 
 float RadioLibWrapper::getLastRSSI() const {
