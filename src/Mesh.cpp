@@ -124,6 +124,18 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
     return ACTION_RELEASE;   // this node is NOT the next hop (OR this packet has already been forwarded), so discard.
   }
 
+  // Final-hop DIRECT (path stripped to empty, count==0): the legit last forwarder's TX, or
+  // another node's final-hop swarm relay. A pending final-hop swarm relay (pc==0, scheduled
+  // from the preceding hop's overheard copy) can ONLY be cancelled by hearing such a count==0
+  // copy — but the count>0 block above is skipped for it, so the cancel scan in
+  // handleSwarmRelay() never ran. Re-enter it here so the legit forward rescinds redundant
+  // pending relays for this payload. handleSwarmRelay() schedules nothing for c<1 (it returns
+  // at the c<1 guard); it only rescinds, and it does not mutate pkt (cancel scan is read-only
+  // on pkt), so the payload switch below still processes it normally.
+  if (pkt->isRouteDirect() && pkt->getPathHashCount() == 0 && getDirectSwarmForward()) {
+    handleSwarmRelay(pkt);
+  }
+
   if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
 
   DispatcherAction action = ACTION_RELEASE;
