@@ -4,6 +4,10 @@
   #include <Arduino.h>
 #endif
 
+#ifdef MESHCORE_SIMULATOR
+  #include "sim_context.h"
+#endif
+
 #include <math.h>
 
 namespace mesh {
@@ -11,6 +15,10 @@ namespace mesh {
 #define MAX_RX_DELAY_MILLIS        32000  // 32 seconds
 #define MIN_TX_BUDGET_RESERVE_MS   100    // min budget (ms) required before allowing next TX
 #define MIN_TX_BUDGET_AIRTIME_DIV  2      // require at least 1/N of estimated airtime as budget before TX
+
+#ifndef RESEND_BACKOFF_STRETCH_MS
+  #define RESEND_BACKOFF_STRETCH_MS  1000   // linear per-attempt resend backoff (ride out interference)
+#endif
 
 #ifndef NOISE_FLOOR_CALIB_INTERVAL
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
@@ -68,11 +76,6 @@ uint32_t Dispatcher::getCADFailMaxDuration() const {
 }
 
 void Dispatcher::loop() {
-  if (millisHasNowPassed(next_floor_calib_time)) {
-    _radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
-    _radio->setCADEnabled(getCADEnabled());
-    next_floor_calib_time = futureMillis(NOISE_FLOOR_CALIB_INTERVAL);
-  }
   _radio->loop();
 
   // Quiet-dwell sampling: periodically probe live channel energy (cheap RSSI-margin, no CAD,
@@ -123,10 +126,13 @@ void Dispatcher::loop() {
       } else {
         n_sent_direct++;
       }
-      releasePacket(outbound);  // return to pool
+      // allow for possible retransmission for reliability
+      if (!resendPacket(outbound)) {
+        releasePacket(outbound); // return to pool
+      }
       outbound = NULL;
     } else if (millisHasNowPassed(outbound_expiry)) {
-      MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
+      MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packet %s send timed out!", getLogDateTime(), outbound->getHashHex());
 
       _radio->onSendFinished();
       logTxFail(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
@@ -155,6 +161,30 @@ void Dispatcher::loop() {
   }
   checkRecv();
   checkSend();
+
+  // Noise floor calibration is placed here intentionally – at the very end of loop(),
+  // after checkRecv() and checkSend() have completed. This avoids two classes of problem:
+  //
+  // 1. Calibration disrupts radio reception: triggerNoiseFloorCalibrate() temporarily
+  //    takes the radio out of normal RX mode. Running it at the top of loop() (the
+  //    previous location) risked aborting an incoming packet that had not yet been read
+  //    out by _radio->loop() / checkRecv().
+  //
+  // 2. Interference with outbound retransmissions: the repeated-sending feature queues
+  //    direct-routed packets for re-transmission (resendPacket()). Calibrating while
+  //    packets are pending in the outbound queue would disrupt those time-sensitive
+  //    transmissions. The guard '_mgr->getOutboundCount() == 0' ensures calibration
+  //    is deferred until the queue is empty.
+  //
+  // Calibration is a low-priority background task and must only run when the radio is
+  // demonstrably idle.
+  if (millisHasNowPassed(next_floor_calib_time)) {
+    if (!_radio->isReceiving() && _mgr->getOutboundCount(_ms->getMillis()) == 0) {
+      _radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
+      _radio->setCADEnabled(getCADEnabled());
+      next_floor_calib_time = futureMillis(NOISE_FLOOR_CALIB_INTERVAL);
+    }
+  }
 }
 
 bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
@@ -200,76 +230,90 @@ bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
 }
 
 void Dispatcher::checkRecv() {
-  Packet* pkt;
-  float score;
-  uint32_t air_time;
-  {
-    uint8_t raw[MAX_TRANS_UNIT+1];
-    int len = _radio->recvRaw(raw, MAX_TRANS_UNIT);
-    if (len > 0) {
-      logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
+  // Drain the entire RX buffer in one loop() pass instead of processing only a single
+  // packet per call. This is critical for the repeated-sending / retransmit-cancellation
+  // mechanism: when a downstream relay forwards our packet we must detect that forwarding
+  // echo (via hash comparison in onRecvPacket()) before the scheduled retransmit timer
+  // fires. With the old single-read design the echo might not be consumed until a later
+  // loop() iteration, by which time the retransmit had already been sent unnecessarily.
+  // Draining all pending packets here minimises that race window.
+  // As a secondary benefit this prevents RX-FIFO overflow under high packet load.
+  while (true) {
 
-      pkt = _mgr->allocNew();
-      if (pkt == NULL) {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
-      } else {
-        if (tryParsePacket(pkt, raw, len)) {
-          pkt->_snr = _radio->getLastSNR() * 4.0f;
-          score = _radio->packetScore(_radio->getLastSNR(), len);
-          air_time = _radio->getEstAirtimeFor(len);
-          rx_air_time += air_time;
-        } else {
-          _mgr->free(pkt);  // put back into pool
-          pkt = NULL;
-        }
-      }
+    Packet *pkt = nullptr;
+    float score = 0.0f;
+    uint32_t air_time = 0;
+
+    uint8_t raw[MAX_TRANS_UNIT + 1];
+    int len = _radio->recvRaw(raw, MAX_TRANS_UNIT);
+    if (len <= 0) {
+      break;
+    }
+
+    logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
+
+    pkt = _mgr->allocNew();
+    if (pkt == NULL) {
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
+      continue;
+    }
+
+    if (tryParsePacket(pkt, raw, len)) {
+      pkt->_snr = _radio->getLastSNR() * 4.0f;
+      score = _radio->packetScore(_radio->getLastSNR(), len);
+      air_time = _radio->getEstAirtimeFor(len);
+      rx_air_time += air_time;
     } else {
+      _mgr->free(pkt);  // put back into pool
       pkt = NULL;
     }
-  }
-  if (pkt) {
-    #if MESH_PACKET_LOGGING
-    Serial.print(getLogDateTime());
-    Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d", 
-            pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
-            (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
-    static uint8_t packet_hash[MAX_HASH_SIZE];
-    pkt->calculatePacketHash(packet_hash);
-    Serial.print(" hash=");
-    mesh::Utils::printHex(Serial, packet_hash, MAX_HASH_SIZE);
+    if (pkt) {
+#if MESH_PACKET_LOGGING
+      Serial.print(getLogDateTime());
+      Serial.printf(": RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d",
+              pkt->getRawLength(), pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
+              (int)pkt->getSNR(), (int)_radio->getLastRSSI(), (int)(score*1000), air_time);
 
-    if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ
-        || pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
-      Serial.printf(" [%02X -> %02X]\n", (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
-    } else {
-      Serial.printf("\n");
-    }
-    #endif
-    logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
+      pkt->calculatePacketHash();
+      Serial.print(" hash=");
+      mesh::Utils::printHex(Serial, pkt->hash, MAX_HASH_SIZE);
 
-    if (pkt->isRouteFlood()) {
-      n_recv_flood++;
-
-      int _delay = calcRxDelay(score, air_time);
-      if (_delay < 50) {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay below threshold (%d)", getLogDateTime(), _delay);
-        processRecvPacket(pkt);   // is below the score delay threshold, so process immediately
+      if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ
+          || pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
+        Serial.printf(" [%02X -> %02X]\n", (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
       } else {
-        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay is: %d millis", getLogDateTime(), _delay);
-        if (_delay > MAX_RX_DELAY_MILLIS) {
-          _delay = MAX_RX_DELAY_MILLIS;
-        }
-        _mgr->queueInbound(pkt, futureMillis(_delay)); // add to delayed inbound queue
+        Serial.printf("\n");
       }
-    } else {
-      n_recv_direct++;
-      processRecvPacket(pkt);
+#endif
+      logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
+
+      if (pkt->isRouteFlood()) {
+        n_recv_flood++;
+
+        int _delay = calcRxDelay(score, air_time);
+        if (_delay < 50) {
+          MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay below threshold (%d)", getLogDateTime(), _delay);
+          processRecvPacket(pkt);   // is below the score delay threshold, so process immediately
+        } else {
+          MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(), score delay is: %d millis", getLogDateTime(), _delay);
+          if (_delay > MAX_RX_DELAY_MILLIS) {
+            _delay = MAX_RX_DELAY_MILLIS;
+          }
+          _mgr->queueInbound(pkt, futureMillis(_delay)); // add to delayed inbound queue
+        }
+      } else {
+        n_recv_direct++;
+        processRecvPacket(pkt);
+      }
     }
   }
 }
 
 void Dispatcher::processRecvPacket(Packet* pkt) {
+  
+  MESH_DEBUG_PRINTLN("Dispatcher::processRecvPacket %s", pkt->getHashHex());
+
   DispatcherAction action = onRecvPacket(pkt);
   if (action == ACTION_RELEASE) {
     _mgr->free(pkt);
@@ -297,7 +341,16 @@ void Dispatcher::checkSend() {
   }
   
   if (!millisHasNowPassed(next_tx_time)) return;
-  if (_radio->isReceiving()) {
+
+  // Pick the channel-busy check by packet kind. Resends (direct, already attempted)
+  // use a NON-invasive gate via isResendChannelActive() so the radio stays in RX and
+  // can still overhear the downstream forward → resend cancellation. First sends keep
+  // the CAD-based carrier sense (collision avoidance worth the momentary deafness).
+  Packet* pending = _mgr->peekNextOutbound(_ms->getMillis());
+  bool resend_lbt = pending && pending->isRouteDirect() && pending->sending_attempts > 0;
+  bool channel_busy = resend_lbt ? isResendChannelActive() : _radio->isReceiving();
+
+  if (channel_busy) {
     if (cad_busy_start == 0) {
       cad_busy_start = _ms->getMillis();   // record when CAD busy state started
     }
@@ -363,8 +416,8 @@ void Dispatcher::checkSend() {
 
     #if MESH_PACKET_LOGGING
       Serial.print(getLogDateTime());
-      Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d)", 
-            len, outbound->getPayloadType(), outbound->isRouteDirect() ? "D" : "F", outbound->payload_len);
+      Serial.printf(": TX, len=%d (type=%d, route=%s, payload_len=%d, attempt=%d)", len,
+                    outbound->getPayloadType(), outbound->isRouteDirect() ? "D" : "F", outbound->payload_len, outbound->sending_attempts);
       if (outbound->getPayloadType() == PAYLOAD_TYPE_PATH || outbound->getPayloadType() == PAYLOAD_TYPE_REQ
         || outbound->getPayloadType() == PAYLOAD_TYPE_RESPONSE || outbound->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
         Serial.printf(" [%02X -> %02X]\n", (uint32_t)outbound->payload[1], (uint32_t)outbound->payload[0]);
@@ -407,7 +460,49 @@ bool Dispatcher::millisHasNowPassed(unsigned long timestamp) const {
 }
 
 unsigned long Dispatcher::futureMillis(int millis_from_now) const {
-  return _ms->getMillis() + millis_from_now;
+  unsigned long wake_time = _ms->getMillis() + millis_from_now;
+#ifdef MESHCORE_SIMULATOR // Register wake time with simulator for accurate scheduling
+  if (auto *ctx = SIM_CTX()) {
+    ctx->wake_registry.registerWakeTime(wake_time);
+  }
+#endif
+
+  return wake_time;
 }
 
+bool Dispatcher::resendPacket(mesh::Packet *packet) {
+
+  // prepare error correction via potential retransmit:
+  // re-send only direct routed packets that carry at least one relay hash, so that a
+  // downstream relay's forward can be overheard to cancel this re-send.
+  // The final relay hop (path empty after removeSelfFromPath, flagged via
+  // final_hop_ack_resend) is the exception: there is no downstream forward to overhear, but
+  // the destination ACKs receipt. Allow exactly one resend there (sending_attempts == 0),
+  // cancellable by the returning ACK (see Mesh::cancelPendingFinalHopResend).
+  if (packet->isRouteDirect() && packet->sending_attempts < getMaxResendAttempts() &&
+      (packet->getPathHashCount() > 0 ||
+       (packet->final_hop_ack_resend && packet->sending_attempts == 0))) {
+    packet->sending_attempts++;
+
+    MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),
+                       packet->sending_attempts);
+
+    // Schedule re-send after the equivalent post-TX airtime silence has elapsed.
+    // We compute the silence directly from the packet's estimated airtime × budget factor.
+    // Adding 100ms jitter on top gives the downstream repeater enough time to forward the
+    // packet, and for us to hear that forwarding (and cancel this re-send) before we
+    // actually transmit. This avoids unnecessary retransmissions and collisions.
+    uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
+    uint32_t packet_airtime_ms = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
+    uint32_t silence_ms = (uint32_t)(packet_airtime_ms * getAirtimeBudgetFactor());
+    // Linear backoff per attempt (sending_attempts was just incremented to 1,2,3…): later
+    // resends land further out so they cross longer interference bursts, and the extra time
+    // gives the downstream forward more chance to be overheard → resend cancellation.
+    uint32_t backoff = (packet->sending_attempts - 1) * RESEND_BACKOFF_STRETCH_MS;
+    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_ms + retransmit_delay + 100 + backoff)));
+    return true;
+  }
+
+  return false;
+}
 }
