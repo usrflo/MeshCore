@@ -96,6 +96,13 @@ mesh::Packet* StaticPoolPacketManager::allocNew() {
 void StaticPoolPacketManager::free(mesh::Packet* packet) {
   memset(packet->hash, 0, MAX_HASH_SIZE);  // clear stale cached hash so calculatePacketHash() recomputes on next use
   packet->hash_hex[0] = '\0';
+  // Reset per-send resend state. sending_attempts and final_hop_ack_resend are otherwise only
+  // zeroed by the Packet ctor, so a reused pool slot would keep a stale sending_attempts >=
+  // getMaxResendAttempts(). resendPacket() would then silently skip resends for every subsequent
+  // direct packet routed through that slot — resends degrade to zero once the pool has turned over
+  // (~pool_size direct sends), even though forwards (which don't check sending_attempts) keep working.
+  packet->sending_attempts = 0;
+  packet->final_hop_ack_resend = false;
   unused.add(packet, 0, 0);
 }
 
