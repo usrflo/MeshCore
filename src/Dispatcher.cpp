@@ -317,13 +317,23 @@ void Dispatcher::checkSend() {
 
   // Quiet-dwell gate: even if the channel is instantaneously free, defer if it was noisy within
   // the last dwell window — let a recent interferer clear so the TX (incl. resends/forwards)
-  // lands in a quiet slot. getCADFailMaxDuration() caps starvation on a persistently loud channel.
+  // lands in a quiet slot. On a PERSISTENTLY loud channel last_channel_noisy_ms would refresh
+  // every DWELL_SAMPLE_INTERVAL, so we cap the CUMULATIVE deferral of one continuous busy streak
+  // via getCADFailMaxDuration(): once a streak has held longer than that, we TX despite recent
+  // noise instead of starving the node (a plain `since < dwell` check alone can never break out).
   uint32_t dwell = getQuietDwellMs();
   if (dwell > 0 && last_channel_noisy_ms > 0) {
-    unsigned long since = _ms->getMillis() - last_channel_noisy_ms;
-    if (since < dwell && since < getCADFailMaxDuration()) {
-      next_tx_time = futureMillis((unsigned long)(dwell - since));
-      return;
+    unsigned long now = _ms->getMillis();
+    unsigned long since = now - last_channel_noisy_ms;
+    if (since < dwell) {
+      if (dwell_starve_start_ms == 0) dwell_starve_start_ms = now;   // begin of this busy streak
+      if (now - dwell_starve_start_ms < getCADFailMaxDuration()) {
+        next_tx_time = futureMillis((unsigned long)(dwell - since));
+        return;
+      }
+      // starvation cap reached — fall through and TX despite recent noise
+    } else {
+      dwell_starve_start_ms = 0;   // channel quiet long enough — reset the busy streak
     }
   }
 
