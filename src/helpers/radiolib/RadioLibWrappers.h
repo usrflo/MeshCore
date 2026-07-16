@@ -5,6 +5,21 @@
 
 #define NUM_NOISE_FLOOR_SAMPLES  64   // RSSI samples reduced to a median per noise-floor calibration block
 
+// SF-scaled dwell margin (dB above the calibrated noise floor) shared by the quiet-dwell gate
+// and instantaneous LBT. High-SF nets (longer, costlier packets) detect interferers more eagerly;
+// low-SF nets (fast/dense traffic) use a higher margin to suppress false busies. The band stays
+// above the noise floor, so sub-noise-floor weak LoRa is deliberately NOT caught here (CAD, the
+// only thing that could, is disabled) — see getDwellRssiMargin().
+#ifndef DWELL_RSSI_MARGIN_BASE
+  #define DWELL_RSSI_MARGIN_BASE  18    // dB at SF7
+#endif
+#ifndef DWELL_RSSI_MARGIN_STEP
+  #define DWELL_RSSI_MARGIN_STEP  1     // dB subtracted per SF above 7
+#endif
+#ifndef DWELL_RSSI_MARGIN_MIN
+  #define DWELL_RSSI_MARGIN_MIN   12    // floor at high SF
+#endif
+
 class RadioLibWrapper : public mesh::Radio {
 protected:
   PhysicalLayer* _radio;
@@ -35,6 +50,7 @@ public:
   void onSendFinished() override;
   bool isInRecvMode() const override;
   bool isChannelActive();
+  bool isChannelNoisy() override;
 
   bool isReceiving() override {
     if (isReceivingPacket()) return true;
@@ -48,6 +64,13 @@ public:
 
   virtual float getCurrentRSSI() =0;
   virtual uint8_t getSpreadingFactor() const { return LORA_SF; }
+  // SF-scaled dB margin above the noise floor at which the channel counts as "noisy"/busy.
+  // SF7→18 dB, SF12→13 dB (floored at DWELL_RSSI_MARGIN_MIN). See DWELL_RSSI_MARGIN_* above.
+  int getDwellRssiMargin() const {
+    int sf = (int)getSpreadingFactor();
+    int m = DWELL_RSSI_MARGIN_BASE - DWELL_RSSI_MARGIN_STEP * (sf > 7 ? sf - 7 : 0);
+    return (m < DWELL_RSSI_MARGIN_MIN) ? DWELL_RSSI_MARGIN_MIN : m;
+  }
   static uint16_t preambleLengthForSF(uint8_t sf) { return sf <= 8 ? 32 : 16; }
   void updatePreamble(uint8_t sf) { _preamble_sf = sf; _radio->setPreambleLength(preambleLengthForSF(sf)); }
   virtual int16_t performChannelScan();

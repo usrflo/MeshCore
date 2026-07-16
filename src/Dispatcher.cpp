@@ -24,6 +24,10 @@ namespace mesh {
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
 #endif
 
+#ifndef DWELL_SAMPLE_INTERVAL
+  #define DWELL_SAMPLE_INTERVAL        50      // ms between quiet-dwell RSSI probes
+#endif
+
 void Dispatcher::begin() {
   n_sent_flood = n_sent_direct = 0;
   n_recv_flood = n_recv_direct = 0;
@@ -73,6 +77,13 @@ uint32_t Dispatcher::getCADFailMaxDuration() const {
 
 void Dispatcher::loop() {
   _radio->loop();
+
+  // Quiet-dwell sampling: periodically probe live channel energy (cheap RSSI-margin, no CAD,
+  // RX stays open) so a recent interferer can defer the next TX into a genuinely quiet slot.
+  if (getQuietDwellMs() > 0 && _radio->isInRecvMode() && millisHasNowPassed(next_dwell_sample_ms)) {
+    next_dwell_sample_ms = futureMillis(DWELL_SAMPLE_INTERVAL);
+    if (_radio->isChannelNoisy()) last_channel_noisy_ms = _ms->getMillis();
+  }
 
   // check for radio 'stuck' in mode other than Rx
   bool is_recv = _radio->isInRecvMode();
@@ -356,6 +367,28 @@ void Dispatcher::checkSend() {
     }
   }
   cad_busy_start = 0;  // reset busy state
+
+  // Quiet-dwell gate: even if the channel is instantaneously free, defer if it was noisy within
+  // the last dwell window — let a recent interferer clear so the TX (incl. resends/forwards)
+  // lands in a quiet slot. On a PERSISTENTLY loud channel last_channel_noisy_ms would refresh
+  // every DWELL_SAMPLE_INTERVAL, so we cap the CUMULATIVE deferral of one continuous busy streak
+  // via getCADFailMaxDuration(): once a streak has held longer than that, we TX despite recent
+  // noise instead of starving the node (a plain `since < dwell` check alone can never break out).
+  uint32_t dwell = getQuietDwellMs();
+  if (dwell > 0 && last_channel_noisy_ms > 0) {
+    unsigned long now = _ms->getMillis();
+    unsigned long since = now - last_channel_noisy_ms;
+    if (since < dwell) {
+      if (dwell_starve_start_ms == 0) dwell_starve_start_ms = now;   // begin of this busy streak
+      if (now - dwell_starve_start_ms < getCADFailMaxDuration()) {
+        next_tx_time = futureMillis((unsigned long)(dwell - since));
+        return;
+      }
+      // starvation cap reached — fall through and TX despite recent noise
+    } else {
+      dwell_starve_start_ms = 0;   // channel quiet long enough — reset the busy streak
+    }
+  }
 
   outbound = _mgr->getNextOutbound(_ms->getMillis());
   if (outbound) {

@@ -202,8 +202,11 @@ int16_t RadioLibWrapper::performChannelScan() {
 }
 
 bool RadioLibWrapper::isChannelActive() {
-  // int.thresh: RSSI-based interference detection (relative to noise floor)
-  if (_threshold != 0 && getCurrentRSSI() > _noise_floor + _threshold) return true;
+  // RSSI-margin: any live energy above the calibrated noise floor counts as channel busy.
+  // Modulation-blind, so it also catches non-LoRa interferers and mid-packet/collision energy
+  // that CAD (a LoRa-preamble detector) misses. Uses the SF-scaled dwell margin, so
+  // instantaneous LBT and the dwell gate share one definition of "channel occupied".
+  if (getCurrentRSSI() > _noise_floor + getDwellRssiMargin()) return true;
 
   // cad: hardware channel activity detection
   if (_cad_enabled) {
@@ -217,6 +220,14 @@ bool RadioLibWrapper::isChannelActive() {
   }
 
   return false;
+}
+
+bool RadioLibWrapper::isChannelNoisy() {
+  // Cheap idle-energy probe for the quiet-dwell gate: channel counts as noisy when live RSSI
+  // exceeds the calibrated noise floor by the SF-scaled dwell margin — independent of the
+  // (configurable) interference threshold, so the gate is always active with no per-device
+  // config. Excludes an in-progress legit RX (no CAD, RX stays open).
+  return (!isReceivingPacket() && getCurrentRSSI() > _noise_floor + getDwellRssiMargin());
 }
 
 float RadioLibWrapper::getLastRSSI() const {

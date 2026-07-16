@@ -6,6 +6,23 @@
 #include <Utils.h>
 #include <string.h>
 
+// Quiet-dwell TX gate — always on, AIRTIME-SCALED (no runtime configuration).
+// How long the channel must be quiet (energy below the dwell margin) before a TX is allowed,
+// derived from the estimated packet air-time so fast (low-SF) nets get a short dwell and slow
+// (high-SF) nets a longer one — see Dispatcher::getQuietDwellMs(). Both ends clamped.
+#ifndef DWELL_AIRTIME_LEN
+  #define DWELL_AIRTIME_LEN     64      // representative payload length (bytes) for the airtime estimate
+#endif
+#ifndef DWELL_AIRTIME_DIVISOR
+  #define DWELL_AIRTIME_DIVISOR 2       // dwell ≈ airtime / DIVISOR
+#endif
+#ifndef DWELL_MS_MIN
+  #define DWELL_MS_MIN          150     // floor (fast nets) — also ≥ ~3 dwell-RSSI samples at 50 ms
+#endif
+#ifndef DWELL_MS_MAX
+  #define DWELL_MS_MAX          600     // ceiling (slow/high-SF nets) — bounds added TX latency
+#endif
+
 namespace mesh {
 
 /**
@@ -76,6 +93,14 @@ public:
   */
   virtual bool isReceiving() { return false; }
 
+  /**
+   * \brief  Cheap, non-invasive live-energy probe for the quiet-dwell gate: is the channel
+   *         currently carrying energy above a fixed margin over the noise floor (RSSI-margin,
+   *         no CAD — RX stays open)? Default false (unknown / unsupported) so mock/simulated
+   *         radios never trip the gate.
+  */
+  virtual bool isChannelNoisy() { return false; }
+
   virtual float getLastRSSI() const { return 0; }
   virtual float getLastSNR() const { return 0; }
 };
@@ -126,6 +151,9 @@ private:
   unsigned long cad_busy_start;
   unsigned long radio_nonrx_start;
   unsigned long next_floor_calib_time, next_agc_reset_time;
+  unsigned long last_channel_noisy_ms;    // 0 = channel has not been seen noisy since boot
+  unsigned long next_dwell_sample_ms;     // throttles the isChannelNoisy() RSSI probe
+  unsigned long dwell_starve_start_ms;    // start of the current continuous busy streak (0 = none); drives the dwell starvation cap
   bool  prev_isrecv_mode;
   uint32_t n_sent_flood, n_sent_direct;
   uint32_t n_recv_flood, n_recv_direct;
@@ -150,6 +178,9 @@ protected:
     next_tx_time = ms.getMillis();
     cad_busy_start = 0;
     next_floor_calib_time = next_agc_reset_time = 0;
+    last_channel_noisy_ms = 0;
+    next_dwell_sample_ms = 0;
+    dwell_starve_start_ms = 0;
     _err_flags = 0;
     radio_nonrx_start = 0;
     prev_isrecv_mode = true;
@@ -172,6 +203,16 @@ protected:
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
+  // quiet-dwell TX gate: dwell window scaled from estimated packet air-time (always on, no config).
+  // See the DWELL_* defaults above. At SF7/BW125 (~120 ms airtime) this floors at DWELL_MS_MIN;
+  // at SF12/BW125 (~3.9 s) it ceilings at DWELL_MS_MAX; mid-SF lands in between.
+  virtual uint32_t getQuietDwellMs() const {
+    uint32_t airtime = _radio->getEstAirtimeFor(DWELL_AIRTIME_LEN);
+    uint32_t dwell = airtime / DWELL_AIRTIME_DIVISOR;
+    if (dwell < DWELL_MS_MIN) dwell = DWELL_MS_MIN;
+    if (dwell > DWELL_MS_MAX) dwell = DWELL_MS_MAX;
+    return dwell;
+  }
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
   // Channel-busy check used ONLY for resend TX gating (direct packets with sending_attempts>0).
   // Default falls back to CAD carrier sense; examples override with a NON-invasive check
