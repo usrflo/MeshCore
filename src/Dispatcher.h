@@ -22,6 +22,13 @@
 #ifndef DWELL_MS_MAX
   #define DWELL_MS_MAX          600     // ceiling (slow/high-SF nets) — bounds added TX latency
 #endif
+#ifndef DWELL_RELEASE_SLOT_CAP_MS
+  // Upper bound on the per-hop release stagger used by the dwell gate's path-staggered release
+  // (see getDwellReleaseSlotMs()). Bounds added latency on high-SF nets where one airtime
+  // (SF12/BW125 ~3.9 s) would explode end-to-end delay; at SF>=10 the cap means spacing is partial
+  // (collision reduction, not elimination).
+  #define DWELL_RELEASE_SLOT_CAP_MS  600
+#endif
 
 namespace mesh {
 
@@ -212,6 +219,20 @@ protected:
     if (dwell < DWELL_MS_MIN) dwell = DWELL_MS_MIN;
     if (dwell > DWELL_MS_MAX) dwell = DWELL_MS_MAX;
     return dwell;
+  }
+  // Per-hop release stagger for the dwell gate's PATH-STAGGERED RELEASE. Sized to ~1.5x one packet
+  // airtime so that, after the channel goes quiet, the relay closest to the destination forwards
+  // first and each upstream relay spends roughly one airtime in RX during that downstream forward —
+  // long enough to decode it and cancel its own pending resend via Mesh::onRecvPacket()'s
+  // isRetryMatch path, instead of every deferred relay keying up at once and colliding. Capped at
+  // DWELL_RELEASE_SLOT_CAP_MS for high-SF nets (where one airtime would dominate end-to-end latency);
+  // at SF>=10 the cap means spacing is partial (collision reduction, not elimination). Mirrors the
+  // airtime*3/2 idiom (Dispatcher.cpp max_airtime).
+  virtual uint32_t getDwellReleaseSlotMs() const {
+    uint32_t airtime = _radio->getEstAirtimeFor(DWELL_AIRTIME_LEN);
+    uint32_t slot = airtime + airtime / 2;     // 1.5x airtime
+    if (slot > DWELL_RELEASE_SLOT_CAP_MS) slot = DWELL_RELEASE_SLOT_CAP_MS;
+    return slot;
   }
   virtual bool getCADEnabled() const { return false; }    // hardware CAD disabled by default
   // Channel-busy check used ONLY for resend TX gating (direct packets with sending_attempts>0).

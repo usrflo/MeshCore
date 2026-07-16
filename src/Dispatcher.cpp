@@ -368,12 +368,26 @@ void Dispatcher::checkSend() {
   }
   cad_busy_start = 0;  // reset busy state
 
-  // Quiet-dwell gate: even if the channel is instantaneously free, defer if it was noisy within
-  // the last dwell window — let a recent interferer clear so the TX (incl. resends/forwards)
-  // lands in a quiet slot. On a PERSISTENTLY loud channel last_channel_noisy_ms would refresh
-  // every DWELL_SAMPLE_INTERVAL, so we cap the CUMULATIVE deferral of one continuous busy streak
-  // via getCADFailMaxDuration(): once a streak has held longer than that, we TX despite recent
-  // noise instead of starving the node (a plain `since < dwell` check alone can never break out).
+  // Quiet-dwell gate with PATH-STAGGERED RELEASE. The detector (isChannelNoisy) is unchanged;
+  // this is the release side only. Even if the channel is instantaneously free, defer while it
+  // was noisy within the last dwell window — and on release, stagger each relay's TX by its
+  // peeked packet's remaining-hop count x one airtime, so the relay CLOSEST to the destination
+  // forwards first. Each upstream relay then spends ~one airtime in RX during that downstream
+  // forward and cancels its own pending resend via Mesh::onRecvPacket()'s isRetryMatch path,
+  // instead of every deferred relay keying up at once and colliding.
+  //
+  // The stagger is encoded ABSOLUTELY (next_tx_time = t_release + stagger), so the line-343 guard
+  // (!millisHasNowPassed(next_tx_time)) holds the ordering PAST the instant dwell clears —
+  // otherwise all relays see since>=dwell simultaneously and fire together, defeating the fix.
+  //
+  // We peek at the projected dwell-clear horizon t_release (NOT now): a relay whose forward was
+  // already consumed has only a future-scheduled resend queued, so peek(now) would return NULL and
+  // collapse the stagger to 0 (relay fires with everyone else -> collides). peek(t_release)
+  // returns that resend once it will be due at release.
+  //
+  // Starvation cap unchanged: on a PERSISTENTLY loud channel last_channel_noisy_ms refreshes every
+  // DWELL_SAMPLE_INTERVAL; once a continuous busy streak exceeds getCADFailMaxDuration() we fall
+  // through and TX despite recent noise (a plain `since < dwell` check alone could never break out).
   uint32_t dwell = getQuietDwellMs();
   if (dwell > 0 && last_channel_noisy_ms > 0) {
     unsigned long now = _ms->getMillis();
@@ -381,10 +395,20 @@ void Dispatcher::checkSend() {
     if (since < dwell) {
       if (dwell_starve_start_ms == 0) dwell_starve_start_ms = now;   // begin of this busy streak
       if (now - dwell_starve_start_ms < getCADFailMaxDuration()) {
-        next_tx_time = futureMillis((unsigned long)(dwell - since));
+        unsigned long t_release = last_channel_noisy_ms + dwell;     // absolute dwell-clear horizon
+        Packet* front = _mgr->peekNextOutbound(t_release);           // NOT now — see note above
+        unsigned long stagger = 0;
+        // TRACE appends an SNR byte per hop (path_len grows downstream), which would invert the
+        // count->rank mapping; its isRetryMatch already cancels on any downstream hop, so skip it.
+        if (front && front->getPayloadType() != PAYLOAD_TYPE_TRACE) {
+          stagger = (unsigned long)front->getPathHashCount() * getDwellReleaseSlotMs();
+        }
+        next_tx_time = t_release + stagger;   // absolute horizon; line 343 enforces the tail
         return;
       }
-      // starvation cap reached — fall through and TX despite recent noise
+      // starvation cap reached — fall through and TX despite recent noise (no stagger: the cap is
+      // an escape hatch meant to force TX after a long deferral; revisit if starvation-path
+      // collisions appear in traces).
     } else {
       dwell_starve_start_ms = 0;   // channel quiet long enough — reset the busy streak
     }
