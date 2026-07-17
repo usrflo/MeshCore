@@ -112,6 +112,14 @@ typedef uint32_t  DispatcherAction;
 #define ERR_EVENT_CAD_TIMEOUT       (1 << 1)
 #define ERR_EVENT_STARTRX_TIMEOUT   (1 << 2)
 
+// Pool-shedding backpressure: when the free packet pool (slots available for allocNew/RX) drops
+// to or below this threshold, skip DIRECT resends (resendPacket) to protect RX liveness. The
+// PRIMARY direct forward is never shed (different path) — only redundant resends. Tune per pool
+// size (repeaters=32, companions=16); default covers a short RX burst.
+#ifndef POOL_SHED_FREE_THRESHOLD
+  #define POOL_SHED_FREE_THRESHOLD  6
+#endif
+
 /**
  * \brief  The low-level task that manages detecting incoming Packets, and the queueing
  *      and scheduling of outbound Packets.

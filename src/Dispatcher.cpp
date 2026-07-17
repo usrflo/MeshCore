@@ -16,9 +16,21 @@ namespace mesh {
 #define MIN_TX_BUDGET_RESERVE_MS   100    // min budget (ms) required before allowing next TX
 #define MIN_TX_BUDGET_AIRTIME_DIV  2      // require at least 1/N of estimated airtime as budget before TX
 
-#ifndef RESEND_BACKOFF_STRETCH_MS
-  #define RESEND_BACKOFF_STRETCH_MS  1000   // linear per-attempt resend backoff (ride out interference)
+// Cancel-window-aware resend timing. The resend must wait for the DOWNSTREAM relay's forward
+// to arrive and cancel this resend via isRetryMatch. That forward takes ~its RX airtime plus any
+// channel deferral (dwell/stagger), estimated as a multiple of this packet's airtime (self-
+// contained — no dwell-symbol dependency, so this compiles on plain dev). HW observer traces
+// showed the downstream forward lands ~0.7s out while the former resend window was ~0.3s
+// (silence+100, backoff=0) → 21/21 resends fired BEFORE the forward → cancel never triggered.
+#ifndef RESEND_CANCEL_WINDOW_AIRTIME_X
+  #define RESEND_CANCEL_WINDOW_AIRTIME_X  5    // cancel window ≈ 5× airtime (downstream forward + dwell/stagger margin)
 #endif
+#ifndef RESEND_CANCEL_WINDOW_CAP_MS
+  #define RESEND_CANCEL_WINDOW_CAP_MS  1500     // cap for high-SF nets where 5× airtime would dominate latency
+#endif
+#ifndef RESEND_BACKOFF_JITTER_MS
+  #define RESEND_BACKOFF_JITTER_MS  100         // small per-attempt jitter — REPLACES the former 1000ms linear backoff
+#endif                                          // (RESEND_BACKOFF_STRETCH_MS), which was too coarse & uncoordinated w/ the cancel window
 
 #ifndef NOISE_FLOOR_CALIB_INTERVAL
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
@@ -449,6 +461,14 @@ unsigned long Dispatcher::futureMillis(int millis_from_now) const {
 
 bool Dispatcher::resendPacket(mesh::Packet *packet) {
 
+  // Pool-shedding: under low free-pool pressure, do NOT queue a resend. A resend consumes a
+  // pool slot shared with RX (allocNew in checkRecv); under sustained load it would exhaust
+  // the pool and deafen this node. The PRIMARY direct forward already transmitted, so shedding
+  // here only drops the REDUNDANT retry.
+  if (_mgr->getFreeCount() <= POOL_SHED_FREE_THRESHOLD) {
+    return false;
+  }
+
   // prepare error correction via potential retransmit:
   // re-send only direct routed packets that carry at least one relay hash, so that a
   // downstream relay's forward can be overheard to cancel this re-send.
@@ -464,19 +484,18 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
     MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),
                        packet->sending_attempts);
 
-    // Schedule re-send after the equivalent post-TX airtime silence has elapsed.
-    // We compute the silence directly from the packet's estimated airtime × budget factor.
-    // Adding 100ms jitter on top gives the downstream repeater enough time to forward the
-    // packet, and for us to hear that forwarding (and cancel this re-send) before we
-    // actually transmit. This avoids unnecessary retransmissions and collisions.
-    uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
+    // Cancel-window-aware resend delay: wait long enough for the downstream relay's forward
+    // to arrive and cancel this resend (isRetryMatch) — instead of the former too-short
+    // (silence+100) window that fired BEFORE the downstream forward existed (HW traces: 21/21
+    // resends misfired). The window is derived from the packet's airtime (self-contained, no
+    // dwell-symbol dependency) and capped; a small per-attempt jitter spreads repeat attempts
+    // without inflating latency the way the old 1000ms/attempt linear backoff did.
     uint32_t packet_airtime_ms = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
-    uint32_t silence_ms = (uint32_t)(packet_airtime_ms * getAirtimeBudgetFactor());
-    // Linear backoff per attempt (sending_attempts was just incremented to 1,2,3…): later
-    // resends land further out so they cross longer interference bursts, and the extra time
-    // gives the downstream forward more chance to be overheard → resend cancellation.
-    uint32_t backoff = (packet->sending_attempts - 1) * RESEND_BACKOFF_STRETCH_MS;
-    _mgr->queueOutbound(packet, 1, futureMillis((int)(silence_ms + retransmit_delay + 100 + backoff)));
+    uint32_t cancel_window = packet_airtime_ms * RESEND_CANCEL_WINDOW_AIRTIME_X;
+    if (cancel_window > RESEND_CANCEL_WINDOW_CAP_MS) cancel_window = RESEND_CANCEL_WINDOW_CAP_MS;
+    uint32_t jitter = (packet->sending_attempts - 1) * RESEND_BACKOFF_JITTER_MS;
+    uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
+    _mgr->queueOutbound(packet, 1, futureMillis((int)(cancel_window + jitter + retransmit_delay)));
     return true;
   }
 
