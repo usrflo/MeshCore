@@ -363,7 +363,22 @@ void Dispatcher::checkSend() {
       // channel activity has gone on too long... (Radio might be in a bad state)
       // force the pending transmit below...
     } else {
-      next_tx_time = futureMillis(getCADFailRetryDelay());
+      if (resend_lbt) {
+        // Deterministic per-hop busy-recheck bucket for DIRECT resends (Problem 1: when an
+        // interferer clears, deferred resenders that share a re-check cadence fire on the same
+        // loop tick and collide). getPathHashCount() decreases by exactly 1 each forwarding hop,
+        // so the originator and every relay of the SAME direct packet carry distinct counts
+        // (N, N-1, N-2, ...). count%3 therefore assigns mutually-in-range chain neighbours to
+        // different re-check cadences: any two nodes <=2 hops apart differ by <=2 in count, hence
+        // are always distinct mod 3. The only same-bucket pairs are >=3 hops apart and do not
+        // radio-interfere. Same {120,240,360} ms range as the random draw -> no latency inflation,
+        // and NOT a quiet-dwell-style window-inflating stagger (the cancel window in
+        // resendPacket() is untouched). First sends keep the randomized getCADFailRetryDelay().
+        uint32_t pos = pending->getPathHashCount() % 3;
+        next_tx_time = futureMillis((pos + 1) * 120);
+      } else {
+        next_tx_time = futureMillis(getCADFailRetryDelay());
+      }
       return;
     }
   }
