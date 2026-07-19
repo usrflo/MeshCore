@@ -16,22 +16,6 @@ namespace mesh {
 #define MIN_TX_BUDGET_RESERVE_MS   100    // min budget (ms) required before allowing next TX
 #define MIN_TX_BUDGET_AIRTIME_DIV  2      // require at least 1/N of estimated airtime as budget before TX
 
-// Cancel-window-aware resend timing. The resend must wait for the DOWNSTREAM relay's forward
-// to arrive and cancel this resend via isRetryMatch. That forward takes ~its RX airtime plus any
-// channel deferral (dwell/stagger), estimated as a multiple of this packet's airtime (self-
-// contained — no dwell-symbol dependency, so this compiles on plain dev). HW observer traces
-// showed the downstream forward lands ~0.7s out while the former resend window was ~0.3s
-// (silence+100, backoff=0) → 21/21 resends fired BEFORE the forward → cancel never triggered.
-#ifndef RESEND_CANCEL_WINDOW_AIRTIME_X
-  #define RESEND_CANCEL_WINDOW_AIRTIME_X  5    // cancel window ≈ 5× airtime (downstream forward + dwell/stagger margin)
-#endif
-#ifndef RESEND_CANCEL_WINDOW_CAP_MS
-  #define RESEND_CANCEL_WINDOW_CAP_MS  1500     // cap for high-SF nets where 5× airtime would dominate latency
-#endif
-#ifndef RESEND_BACKOFF_JITTER_MS
-  #define RESEND_BACKOFF_JITTER_MS  100         // small per-attempt jitter — REPLACES the former 1000ms linear backoff
-#endif                                          // (RESEND_BACKOFF_STRETCH_MS), which was too coarse & uncoordinated w/ the cancel window
-
 #ifndef NOISE_FLOOR_CALIB_INTERVAL
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
 #endif
@@ -499,21 +483,32 @@ bool Dispatcher::resendPacket(mesh::Packet *packet) {
     MESH_DEBUG_PRINTLN("Dispatcher::resendPacket %s attempt=%d", packet->getHashHex(),
                        packet->sending_attempts);
 
-    // Cancel-window-aware resend delay: wait long enough for the downstream relay's forward
-    // to arrive and cancel this resend (isRetryMatch) — instead of the former too-short
-    // (silence+100) window that fired BEFORE the downstream forward existed (HW traces: 21/21
-    // resends misfired). The window is derived from the packet's airtime (self-contained, no
-    // dwell-symbol dependency) and capped; a small per-attempt jitter spreads repeat attempts
-    // without inflating latency the way the old 1000ms/attempt linear backoff did.
+    // Resend window: W = C0 + K*airtime + margin + (attempt-1)*jitter. C0 (RESEND_DEFERRAL_FIXED_MS)
+    // is a static, SF-independent constant calibrated to the measured fixed forward-latency
+    // component; the K*airtime term carries the SF-dependence (airtime comes from getEstAirtimeFor(),
+    // i.e. from the configured SF/BW/CR), so the window tracks the spreading factor automatically —
+    // no per-regime constant. The K*airtime term already covers the downstream relay's forward TX
+    // and its getDirectRetransmitDelay() spread, so the originator's OWN direct-retransmit delay is
+    // NOT added on top here — it would only inflate the wait without covering any forward-latency
+    // component. getDirectRetransmitDelay() stays in force for actual relaying (see Mesh.cpp).
     uint32_t packet_airtime_ms = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
-    uint32_t cancel_window = packet_airtime_ms * RESEND_CANCEL_WINDOW_AIRTIME_X;
-    if (cancel_window > RESEND_CANCEL_WINDOW_CAP_MS) cancel_window = RESEND_CANCEL_WINDOW_CAP_MS;
-    uint32_t jitter = (packet->sending_attempts - 1) * RESEND_BACKOFF_JITTER_MS;
-    uint32_t retransmit_delay = getDirectRetransmitDelay(packet);
-    _mgr->queueOutbound(packet, 1, futureMillis((int)(cancel_window + jitter + retransmit_delay)));
+    uint32_t cancel_window = resendWindowFor((uint16_t)packet_airtime_ms, packet->sending_attempts);
+    _mgr->queueOutbound(packet, 1, futureMillis((int)cancel_window));
     return true;
   }
 
   return false;
 }
+
+// W = C0 + K*airtime + margin + (attempt-1)*jitter, capped at RESEND_DEFERRAL_MAX_MS.
+// C0 = RESEND_DEFERRAL_FIXED_MS (static, SF-independent); the K*airtime term carries SF-dependence.
+uint32_t Dispatcher::resendWindowFor(uint16_t airtime_ms, uint8_t sending_attempts) const {
+  uint32_t w = (uint32_t)RESEND_DEFERRAL_FIXED_MS
+             + (uint32_t)airtime_ms * RESEND_DEFERRAL_AIRTIME_X
+             + RESEND_DEFERRAL_MARGIN_MS
+             + (uint32_t)(sending_attempts - 1) * RESEND_BACKOFF_JITTER_MS;
+  if (w > RESEND_DEFERRAL_MAX_MS) w = RESEND_DEFERRAL_MAX_MS;
+  return w;
+}
+
 }

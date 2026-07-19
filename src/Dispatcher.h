@@ -120,6 +120,35 @@ typedef uint32_t  DispatcherAction;
   #define POOL_SHED_FREE_THRESHOLD  6
 #endif
 
+// Resend window model. The resend must wait for the DOWNSTREAM relay's forward to arrive and
+// cancel it via isRetryMatch. The forward latency decomposes into:
+//   - a fixed part: relay processing + LBT/CAD-retry (in 120ms units) + optional dwell + scheduling,
+//   - an airtime-proportional part: the relay's forward TX (~1x airtime) + its retransmit_delay.
+// The window is therefore modelled as:   W = C0 + K*airtime + margin + (attempt-1)*jitter
+// C0 (RESEND_DEFERRAL_FIXED_MS) is a STATIC value calibrated from observer runs — the measured
+// fixed forward-latency component, SF-INDEPENDENT because the SF-dependent forward TX airtime is
+// carried entirely by the K*airtime term (getEstAirtimeFor already encodes the configured SF/BW/CR).
+// So one formula covers any spreading factor without a per-regime constant or an SF branch. The
+// former flat 5x-airtime multiplier could not represent the fixed part and under-covered it at low SF
+// (SF5/SF8), where airtime is only a few ms while the fixed relay deferral is ~600 ms. (An earlier
+// runtime-adaptive C via EWMA on overheard forwards was removed as over-engineering: the forward
+// latency is stable, so the EWMA converged to the same value a correctly-set static C0 gives.)
+#ifndef RESEND_DEFERRAL_FIXED_MS
+  #define RESEND_DEFERRAL_FIXED_MS   600   // C0: measured fixed forward-latency component (relay processing + CAD-retry + scheduling). Observer runs SF8 w/ & w/o interferer: residual = forward_latency - K*airtime median ~575 ms. SF-independent; raise if dwell/CAD config adds fixed latency.
+#endif
+#ifndef RESEND_DEFERRAL_AIRTIME_X
+  #define RESEND_DEFERRAL_AIRTIME_X  2     // K: forward TX (1x) + mean downstream retransmit_delay (~1x), expressed in airtimes
+#endif
+#ifndef RESEND_DEFERRAL_MARGIN_MS
+  #define RESEND_DEFERRAL_MARGIN_MS  40    // extra safety for scheduling jitter / latency variance
+#endif
+#ifndef RESEND_DEFERRAL_MAX_MS
+  #define RESEND_DEFERRAL_MAX_MS     1500  // hard ceiling on W (bounds recovery latency at high SF / extreme airtime)
+#endif
+#ifndef RESEND_BACKOFF_JITTER_MS
+  #define RESEND_BACKOFF_JITTER_MS   100   // per-attempt stretch (attempt-1)*100 - the light stretch for 2nd/3rd attempt
+#endif
+
 /**
  * \brief  The low-level task that manages detecting incoming Packets, and the queueing
  *      and scheduling of outbound Packets.
@@ -140,6 +169,9 @@ private:
   unsigned long tx_budget_ms;
   unsigned long last_budget_update;
   unsigned long duty_cycle_window_ms;
+
+  // W = C0 + K*airtime + margin + (attempt-1)*jitter, with C0 = RESEND_DEFERRAL_FIXED_MS (static).
+  uint32_t resendWindowFor(uint16_t airtime_ms, uint8_t sending_attempts) const;
 
   void processRecvPacket(Packet* pkt);
   void updateTxBudget();
