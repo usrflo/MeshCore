@@ -33,6 +33,7 @@
 #include <helpers/StatsFormatHelper.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/RegionMap.h>
+#include <helpers/CorridorCheck.h>
 #include "RateLimiter.h"
 
 #ifdef WITH_BRIDGE

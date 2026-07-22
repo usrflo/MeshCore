@@ -50,6 +50,7 @@
 #define CMD_SEND_BINARY_REQ           50
 #define CMD_FACTORY_RESET             51
 #define CMD_SEND_PATH_DISCOVERY_REQ   52
+#define CMD_SEND_CHANNEL_TXT_MSG_CORRIDOR 53   // simulator extension: channel msg with geo-corridor (Flood Corridor)
 #define CMD_SET_FLOOD_SCOPE_KEY       54   // v8+
 #define CMD_SEND_CONTROL_DATA         55   // v8+
 #define CMD_GET_STATS                 56   // v8+, second byte is stats type
@@ -1142,6 +1143,52 @@ void MyMesh::handleCmdFrame(size_t len) {
         writeErrFrame(ERR_CODE_NOT_FOUND); // bad channel_idx
       }
     }
+  } else if (cmd_frame[0] == CMD_SEND_CHANNEL_TXT_MSG_CORRIDOR) { // send GroupChannel text msg with geo-corridor (Flood Corridor)
+    // App→firmware wire: [op][txt_type][ch_idx][timestamp(4)][text][triple0(4)..tripleN-1(4)][count N(1)]
+    int i = 1;
+    uint8_t txt_type = cmd_frame[i++];
+    uint8_t channel_idx = cmd_frame[i++];
+    uint32_t msg_timestamp;
+    memcpy(&msg_timestamp, &cmd_frame[i], 4);
+    i += 4;
+    if ((int)len <= i) { writeErrFrame(ERR_CODE_ILLEGAL_ARG); return; }
+    uint8_t n_triples = cmd_frame[len - 1];
+    if (n_triples > MAX_CORRIDOR_TRIPLES) { writeErrFrame(ERR_CODE_ILLEGAL_ARG); return; }
+    int trailer_len = 1 + (int)n_triples * CORRIDOR_TRIPLE_BYTES;
+    int text_len = (int)len - i - trailer_len;
+    if (text_len < 0 || txt_type != TXT_TYPE_PLAIN) { writeErrFrame(ERR_CODE_UNSUPPORTED_CMD); return; }
+
+    ChannelDetails channel;
+    if (!getChannel(channel_idx, channel)) { writeErrFrame(ERR_CODE_NOT_FOUND); return; }
+
+    // Build the standard group-text payload (timestamp + "name: " + text), encrypted.
+    uint8_t temp[5 + MAX_TEXT_LEN + 32];
+    memcpy(temp, &msg_timestamp, 4);
+    temp[4] = TXT_TYPE_PLAIN;
+    sprintf((char *) &temp[5], "%s: ", _prefs.node_name);
+    char *ep = strchr((char *) &temp[5], 0);
+    int prefix_len = ep - (char *) &temp[5];
+    int copy_len = text_len;
+    if (copy_len + prefix_len > MAX_TEXT_LEN) copy_len = MAX_TEXT_LEN - prefix_len;
+    memcpy(ep, &cmd_frame[i], copy_len);
+    ep[copy_len] = 0;
+    mesh::Packet *pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel.channel, temp, 5 + prefix_len + copy_len);
+    if (pkt == NULL) { writeErrFrame(ERR_CODE_NOT_FOUND); return; }
+
+    // Decode triples, attach as the corridor region, and scope to the "corridor" pseudo-region.
+    CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+    const uint8_t *triple_data = &cmd_frame[i + text_len];
+    for (int t = 0; t < n_triples; t++) {
+      uint32_t word;
+      memcpy(&word, triple_data + t * CORRIDOR_TRIPLE_BYTES, 4);
+      decodeCorridorTriple(word, triples[t]);
+    }
+    fillCorridor(pkt, triples, n_triples);
+    uint16_t codes[2];
+    codes[0] = corridorPseudoKey().calcTransportCode(pkt);  // pseudo-region "corridor"
+    codes[1] = pkt->transport_codes[1];                      // count<<12, set by fillCorridor
+    sendFlood(pkt, codes, 0, _prefs.path_hash_mode + 1);
+    writeOKFrame();
   } else if (cmd_frame[0] == CMD_SEND_CHANNEL_DATA) { // send GroupChannel datagram
     if (len < 4) {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG);

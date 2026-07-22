@@ -48,6 +48,7 @@ public:
   uint16_t transport_codes[2];
   uint8_t path[MAX_PATH_SIZE];
   uint8_t payload[MAX_PACKET_PAYLOAD];
+  uint8_t corridor[MAX_CORRIDOR_TRIPLES * CORRIDOR_TRIPLE_BYTES];  // geo-corridor region (Flood Corridor)
   int8_t _snr;
 
   /**
@@ -81,6 +82,11 @@ public:
   uint8_t getPathByteLen() const { return getPathHashCount() * getPathHashSize(); }
   void setPathHashCount(uint8_t n) { path_len &= ~63; path_len |= n; }
   void setPathHashSizeAndCount(uint8_t sz, uint8_t n) { path_len = ((sz - 1) << 6) | (n & 63); }
+
+  // Flood Corridor: triple count travels in code_2 (transport_codes[1]) bits 15-12.
+  // Only meaningful for packets with transport codes (ROUTE_TYPE_TRANSPORT_*).
+  uint8_t getCorridorCount() const { return (uint8_t)((transport_codes[1] >> 12) & 0x0F); }
+  uint8_t getCorridorByteLen() const { return hasTransportCodes() ? (uint8_t)(getCorridorCount() * CORRIDOR_TRIPLE_BYTES) : 0; }
 
   static uint8_t copyPath(uint8_t* dest, const uint8_t* src, uint8_t path_len);  // returns path_len
   static size_t writePath(uint8_t* dest, const uint8_t* src, uint8_t path_len);  // returns byte length written

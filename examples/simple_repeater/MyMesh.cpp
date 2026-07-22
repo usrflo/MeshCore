@@ -426,6 +426,11 @@ void MyMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, ui
   }
 }
 
+// Sentinel used as recv_pkt_region when a flood matches the "corridor"
+// pseudo-region.  Named "corridor" so getTransportKeysFor() derives the very
+// same pseudo-key (see CorridorCheck.h::corridorPseudoKey).
+static RegionEntry corridor_match_region = { 0xFFFE, 0, 0, "corridor" };
+
 bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   if (_prefs.disable_fwd) return false;
   if (packet->isRouteFlood()) {
@@ -449,6 +454,19 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
     if (isLooped(packet, maximums)) {
       MESH_DEBUG_PRINTLN("allowPacketForward: FLOOD packet loop detected!");
       return false;
+    }
+  }
+  // Flood Corridor geo-filter: forward only if this repeater's own position
+  // lies inside the corridor.  Fail-open when position is unknown (0,0) so a
+  // repeater without a location set never blocks corridor delivery.
+  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD && packet->getCorridorCount() > 0) {
+    if (_prefs.node_lat != 0.0 || _prefs.node_lon != 0.0) {
+      CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+      uint8_t n = decodePacketCorridor(packet, triples, MAX_CORRIDOR_TRIPLES);
+      if (n > 0 && !isPointInCorridor((float)_prefs.node_lat, (float)_prefs.node_lon, triples, n)) {
+        MESH_DEBUG_PRINTLN("allowPacketForward: position outside corridor, dropping flood");
+        return false;
+      }
     }
   }
   return true;
@@ -552,6 +570,13 @@ uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
 mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
   if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
     recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
+    // Flood Corridor (Model X): if no configured region matched, accept the
+    // well-known "corridor" pseudo-region so corridor-aware repeaters forward
+    // and apply the geo-filter in allowPacketForward().  Old repeaters don't
+    // know this pseudo-region → recv_pkt_region stays NULL → clean drop.
+    if (recv_pkt_region == NULL && pkt->getCorridorCount() > 0 && matchesCorridorRegion(pkt)) {
+      recv_pkt_region = &corridor_match_region;
+    }
   } else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {
     if (region_map.getWildcard().flags & REGION_DENY_FLOOD) {
       recv_pkt_region = NULL;

@@ -35,7 +35,7 @@ uint8_t Packet::copyPath(uint8_t* dest, const uint8_t* src, uint8_t path_len) {
 }
 
 int Packet::getRawLength() const {
-  return 2 + getPathByteLen() + payload_len + (hasTransportCodes() ? 4 : 0);
+  return 2 + getPathByteLen() + getCorridorByteLen() + payload_len + (hasTransportCodes() ? 4 : 0);
 }
 
 void Packet::calculatePacketHash(uint8_t* hash) const {
@@ -58,6 +58,8 @@ uint8_t Packet::writeTo(uint8_t dest[]) const {
   }
   dest[i++] = path_len;
   i += writePath(&dest[i], path, path_len);
+  uint8_t clen = getCorridorByteLen();
+  if (clen) { memcpy(&dest[i], corridor, clen); i += clen; }
   memcpy(&dest[i], payload, payload_len); i += payload_len;
   return i;
 }
@@ -77,7 +79,14 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len) {
   uint8_t bl = getPathByteLen();
   memcpy(path, &src[i], bl); i += bl;
 
-  if (i >= len) return false;   // bad encoding
+  // Flood Corridor region (between path and payload), only when code_2 count > 0.
+  uint8_t clen = getCorridorByteLen();
+  if (clen) {
+    if (i + clen > len) return false;   // bad encoding
+    memcpy(corridor, &src[i], clen); i += clen;
+  }
+
+  if (i > len) return false;   // bad encoding
   payload_len = len - i;
   if (payload_len > sizeof(payload)) return false;  // bad encoding
   memcpy(payload, &src[i], payload_len); //i += payload_len;

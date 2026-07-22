@@ -177,6 +177,18 @@ bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
 
   memcpy(pkt->path, &raw[i], path_byte_len); i += path_byte_len;
 
+  // Flood Corridor: a dedicated region between path and payload, present when
+  // code_2 carries a triple count N > 0. Old/corridor-unaware senders always
+  // set code_2 = 0 → no region → payload is the remainder (unchanged behavior).
+  uint8_t corridor_byte_len = pkt->getCorridorByteLen();
+  if (corridor_byte_len) {
+    if (i + corridor_byte_len > len) {
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): partial or corrupt packet (corridor), len=%d", getLogDateTime(), len);
+      return false;
+    }
+    memcpy(pkt->corridor, &raw[i], corridor_byte_len); i += corridor_byte_len;
+  }
+
   pkt->payload_len = len - i;  // payload is remainder
   if (pkt->payload_len > sizeof(pkt->payload)) {
     MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d", getLogDateTime(), (uint32_t)pkt->payload_len);
@@ -316,6 +328,11 @@ void Dispatcher::checkSend() {
     }
     raw[len++] = outbound->path_len;
     len += Packet::writePath(&raw[len], outbound->path, outbound->path_len);
+
+    uint8_t corridor_byte_len = outbound->getCorridorByteLen();
+    if (corridor_byte_len) {
+      memcpy(&raw[len], outbound->corridor, corridor_byte_len); len += corridor_byte_len;
+    }
 
     if (len + outbound->payload_len > MAX_TRANS_UNIT) {
       MESH_DEBUG_PRINTLN("%s Dispatcher::checkSend(): FATAL: Invalid packet queued... too long, len=%d", getLogDateTime(), len + outbound->payload_len);
