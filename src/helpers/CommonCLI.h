@@ -20,6 +20,15 @@
 #define LOOP_DETECT_MODERATE  2
 #define LOOP_DETECT_STRICT    3
 
+// Noise-gate margin (flood suppression). The channel is "noisy" when the measured noise floor is
+// at least this many dB above THIS SITE's slowly-tracked quiet baseline (see MyMesh's baseline
+// tracker). Relative, so no expert absolute-dBm guess is needed. AUTO => firmware default; an
+// explicit 0..40 dB value overrides it (smaller = more sensitive / suppresses less).
+#define FLOOD_SUPPRESS_NOISE_MARGIN_AUTO     127   // int8_t sentinel: use FLOOD_SUPPRESS_NOISE_MARGIN_DEFAULT
+#define FLOOD_SUPPRESS_NOISE_MARGIN_DEFAULT  10    // dB above baseline (the auto margin)
+#define FLOOD_SUPPRESS_NOISE_MARGIN_MIN      0
+#define FLOOD_SUPPRESS_NOISE_MARGIN_MAX      40
+
 class NodePrefs : public ConfigSerializer {
 public:
   // in-memory backing data
@@ -71,6 +80,17 @@ public:
   uint8_t max_resend_attempts; // 0 = disabled, 1-3, default 2 (repeated sending)
   uint8_t cad_enabled = 0;      // hardware Channel Activity Detection before TX (boolean)
   uint8_t extra_sf[4];
+  // Redundancy-aware FLOOD suppression (simple_repeater). One master switch + SNR/delay params.
+  // The threshold C is derived from the neighbour table (adaptive) with a static fallback
+  // when no neighbour data is available; it is not user-configurable.
+  uint8_t flood_suppress = 0;          // master switch (0=off, 1=on); feature default applied in MyMesh ctor
+  int8_t  flood_suppress_snr_hi = 0;   // dB: overheard forward with SNR>=this counts double (central/redundant)
+  int8_t  flood_suppress_snr_lo = 0;   // dB: overheard forward with SNR<this counts 0 (preserve edge)
+  uint8_t flood_suppress_delay_x = 0;  // extra TX-delay multiplier for central flood relays
+  int8_t  trace_tx_power_dbm = 0;      // TX power (dBm) used ONLY for coverage TRACE probes (lower = less disturbance)
+  // SNR-repeat fallback is fixed ON (not configurable). The noise gate's margin is configurable
+  // (AUTO = firmware default); see FLOOD_SUPPRESS_NOISE_MARGIN_* above.
+  int8_t  flood_suppress_noise_margin = FLOOD_SUPPRESS_NOISE_MARGIN_AUTO;  // dB above baseline (AUTO=default)
 
 private:
   class RadioPrefs : public ConfigSerializer {
@@ -150,6 +170,12 @@ private:
       def("f_max_uns", _parent->flood_max_unscoped);
       def("f_max_adv", _parent->flood_max_advert);
       def("loop", _parent->loop_detect);
+      def("fs", _parent->flood_suppress);
+      def("fs_hi", _parent->flood_suppress_snr_hi);
+      def("fs_lo", _parent->flood_suppress_snr_lo);
+      def("fs_dx", _parent->flood_suppress_delay_x);
+      def("fs_tx", _parent->trace_tx_power_dbm);
+      def("fs_nm", _parent->flood_suppress_noise_margin);
     }
   public:
     RepeatPrefs(NodePrefs* parent) : _parent(parent) { }
@@ -220,6 +246,17 @@ public:
   // Appends the resend-ratio suffix (", resends N/M (P%)") to the max.resend get-reply. Default is a
   // no-op so wrappers without Dispatcher access keep the plain "> N" reply.
   virtual void formatResendRatioReply(char *reply) { }
+  // Appends the suppression-ratio suffix (", suppressed N/M (P%)") to the flood.suppress get-reply.
+  // Default is a no-op so non-repeater roles keep the plain "> on/off" reply.
+  virtual void formatFloodSuppressRatioReply(char *reply) { }
+  // List directly-attached leaf clients (client-aware suppression). Default no-op.
+  virtual void formatClientsReply(char *reply) { }
+  // Reach edges of one near repeater (directed inter-neighbour graph), looked up by
+  // a hash prefix. Default no-op. hash_len is the number of prefix bytes parsed.
+  virtual void formatReachReply(char *reply, const uint8_t* hash, uint8_t hash_len) { }
+  // Near coverage peers (fresh + SNR>=snr_lo), strongest first, with the active
+  // snr_lo threshold and the coverage cap. Default no-op.
+  virtual void formatNearReply(char *reply) { }
   virtual mesh::LocalIdentity& getSelfId() = 0;
   virtual void saveIdentity(const mesh::LocalIdentity& new_id) = 0;
   virtual void clearStats() = 0;
