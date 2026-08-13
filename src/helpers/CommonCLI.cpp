@@ -276,9 +276,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       handleSetCmd(sender_timestamp, command, reply);
       if (!_last_save_ok) {
         // Underlying write failed (e.g. corrupt/full InternalFS) - the per-field "OK" reply
-        // would be misleading. Keep it short (reply may travel over LoRa) and name 'erase'
-        // only as a last resort (it wipes prv.key/identity too).
-        strcpy(reply, "ERR: prefs write failed - 'erase' as last resort");
+        // would be misleading.
+        strcpy(reply, "ERR: prefs write failed - 'erase' after saving prv.key as last resort");
       }
     } else if (sender_timestamp == 0 && strcmp(command, "erase") == 0) {
       bool s = _callbacks->formatFileSystem();
