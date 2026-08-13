@@ -35,7 +35,12 @@ void CommonCLI::loadPrefs(FILESYSTEM* fs) {
     File file = fs->open("/prefs.json");
 #endif
     if (file) {
-      _prefs->loadSerial(file);   // new Serial prefs
+      if (file.size() == 0) {
+        MESH_DEBUG_PRINTLN("loadPrefs: /prefs.json empty - using defaults");
+      } else {
+        bool ok = _prefs->loadSerial(file);   // returns true even on an empty file
+        if (!ok) MESH_DEBUG_PRINTLN("loadPrefs: /prefs.json parse failed - using defaults");
+      }
       file.close();
     }
   } else if (fs->exists("/com_prefs")) {
@@ -149,12 +154,14 @@ bool CommonCLI::savePrefs(FILESYSTEM* fs) {
 #else
   File file = fs->open("/prefs.json", "w", true);
 #endif
+  bool success = false;
   if (file) {
-    bool success = _prefs->saveSerial(file);
+    success = _prefs->saveSerial(file);
     file.close();
-    return success;
   }
-  return false;
+  _last_save_ok = success;
+  if (!success) MESH_DEBUG_PRINTLN("savePrefs: write FAILED (prefs NOT persisted)");
+  return success;
 }
 
 #define MIN_LOCAL_ADVERT_INTERVAL   60
@@ -265,7 +272,14 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
     } else if (memcmp(command, "get ", 4) == 0) {
       handleGetCmd(sender_timestamp, command, reply);
     } else if (memcmp(command, "set ", 4) == 0) {
+      _last_save_ok = true;
       handleSetCmd(sender_timestamp, command, reply);
+      if (!_last_save_ok) {
+        // Underlying write failed (e.g. corrupt/full InternalFS) - the per-field "OK" reply
+        // would be misleading. Keep it short (reply may travel over LoRa) and name 'erase'
+        // only as a last resort (it wipes prv.key/identity too).
+        strcpy(reply, "ERR: prefs write failed - 'erase' as last resort");
+      }
     } else if (sender_timestamp == 0 && strcmp(command, "erase") == 0) {
       bool s = _callbacks->formatFileSystem();
       sprintf(reply, "File system erase: %s", s ? "OK" : "Err");

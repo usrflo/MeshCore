@@ -259,6 +259,10 @@ class CommonCLI {
   ClientACL* _acl;
   char tmp[PRV_KEY_SIZE*2 + 4];
 
+  // Set false by savePrefs(FILESYSTEM*) when the prefs write (or file open) fails, so the
+  // command handler can surface it instead of replying "OK". Reset to true before each save.
+  bool _last_save_ok = true;
+
   mesh::RTCClock* getRTCClock() { return _rtc; }
   void savePrefs();
   void loadPrefsInt(FILESYSTEM* _fs, const char* filename);
