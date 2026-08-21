@@ -86,7 +86,18 @@ public:
   // Flood Corridor: triple count travels in code_2 (transport_codes[1]) bits 15-12.
   // Only meaningful for packets with transport codes (ROUTE_TYPE_TRANSPORT_*).
   uint8_t getCorridorCount() const { return (uint8_t)((transport_codes[1] >> 12) & 0x0F); }
-  uint8_t getCorridorByteLen() const { return hasTransportCodes() ? (uint8_t)(getCorridorCount() * CORRIDOR_TRIPLE_BYTES) : 0; }
+  // Corrupt or hostile encoding: code_2 advertises more triples than corridor[]
+  // can hold.  Every legitimate sender clamps to MAX_CORRIDOR_TRIPLES (fillCorridor,
+  // makeCorridorHeader, the companion opcode-53 handler, the Rust codec).
+  bool hasOversizedCorridor() const { return hasTransportCodes() && getCorridorCount() > MAX_CORRIDOR_TRIPLES; }
+  // Corridor region size in bytes, or 0 when absent/invalid.  Clamped so every
+  // consumer (parse, serialize) stays inside the fixed corridor[] buffer even
+  // if a hasOversizedCorridor() check is ever missed.
+  uint8_t getCorridorByteLen() const {
+    if (!hasTransportCodes()) return 0;
+    uint8_t n = getCorridorCount();
+    return (n > MAX_CORRIDOR_TRIPLES) ? 0 : n * CORRIDOR_TRIPLE_BYTES;
+  }
 
   static uint8_t copyPath(uint8_t* dest, const uint8_t* src, uint8_t path_len);  // returns path_len
   static size_t writePath(uint8_t* dest, const uint8_t* src, uint8_t path_len);  // returns byte length written

@@ -180,6 +180,10 @@ bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
   // Flood Corridor: a dedicated region between path and payload, present when
   // code_2 carries a triple count N > 0. Old/corridor-unaware senders always
   // set code_2 = 0 → no region → payload is the remainder (unchanged behavior).
+  if (pkt->hasOversizedCorridor()) {   // N > MAX_CORRIDOR_TRIPLES would overflow corridor[]
+    MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): corrupt packet (corridor count %d > %d), len=%d", getLogDateTime(), pkt->getCorridorCount(), MAX_CORRIDOR_TRIPLES, len);
+    return false;
+  }
   uint8_t corridor_byte_len = pkt->getCorridorByteLen();
   if (corridor_byte_len) {
     if (i + corridor_byte_len > len) {

@@ -80,6 +80,7 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len) {
   memcpy(path, &src[i], bl); i += bl;
 
   // Flood Corridor region (between path and payload), only when code_2 count > 0.
+  if (hasOversizedCorridor()) return false;   // bad encoding (count > MAX_CORRIDOR_TRIPLES would overflow corridor[])
   uint8_t clen = getCorridorByteLen();
   if (clen) {
     if (i + clen > len) return false;   // bad encoding
