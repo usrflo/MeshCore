@@ -5,6 +5,10 @@
 #include <bluefruit.h>
 #include <nrf_soc.h>
 
+#ifdef USE_CC310_HW_CRYPTO
+#include <Adafruit_nRFCrypto.h>
+#endif
+
 static BLEDfu bledfu;
 
 static void connect_callback(uint16_t conn_handle) {
@@ -21,6 +25,11 @@ static void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
 
 void NRF52Board::begin() {
   startup_reason = BD_STARTUP_NORMAL;
+
+  #ifdef USE_CC310_HW_CRYPTO
+    // CC310 TRNG is higher quality and environment-independent vs radio RSSI noise.
+    nRFCrypto.begin();
+  #endif
 }
 
 #ifdef NRF52_POWER_MANAGEMENT
@@ -352,6 +361,10 @@ void NRF52Board::shutdownPeripherals() {
     sensors.getLocationProvider()->stop();
   }
 
+#ifdef USE_CC310_HW_CRYPTO
+    nRFCrypto.end();
+#endif
+
   // Flush serial buffers
   Serial.flush();
   delay(100);
@@ -396,7 +409,8 @@ bool NRF52Board::startOTAUpdate(const char *id, char reply[]) {
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.configPrphConn(92, BLE_GAP_EVENT_LENGTH_MIN, 16, 16);
 
-  Bluefruit.begin(1, 0);
+  if (!Bluefruit.begin(1, 0)) return false;
+
   // Set max power. Accepted values are: -40, -30, -20, -16, -12, -8, -4, 0, 4
   Bluefruit.setTxPower(4);
   // Set the BLE device name
