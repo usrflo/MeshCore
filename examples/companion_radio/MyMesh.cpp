@@ -63,6 +63,7 @@
 #define CMD_SET_DEFAULT_FLOOD_SCOPE   63
 #define CMD_GET_DEFAULT_FLOOD_SCOPE   64
 #define CMD_SEND_RAW_PACKET           65
+#define CMD_PROPOSE_CORRIDOR          66   // simulator extension: propose a geo-corridor (Flood Corridor)
 
 // Stats sub-types for CMD_GET_STATS
 #define STATS_TYPE_CORE               0
@@ -98,6 +99,7 @@
 #define RESP_ALLOWED_REPEAT_FREQ      26
 #define RESP_CODE_CHANNEL_DATA_RECV   27
 #define RESP_CODE_DEFAULT_FLOOD_SCOPE 28
+#define RESP_CODE_PROPOSE_CORRIDOR    29   // reply to CMD_PROPOSE_CORRIDOR
 
 #define MAX_CHANNEL_DATA_LENGTH       (MAX_FRAME_SIZE - 9)
 
@@ -1195,6 +1197,52 @@ void MyMesh::handleCmdFrame(size_t len) {
     codes[1] = pkt->transport_codes[1];                      // count<<12, set by fillCorridor
     sendFlood(pkt, codes, 0, _prefs.path_hash_mode + 1);
     writeOKFrame();
+  } else if (cmd_frame[0] == CMD_PROPOSE_CORRIDOR) { // ask firmware to propose a geo-corridor (Flood Corridor)
+    // App→firmware wire: [op][lat(4)][lon(4)][mode(1, optional)]
+    // Reply:            [RESP_CODE_PROPOSE_CORRIDOR][reason][count][triple(4) × count]
+    if (len < 9) { writeErrFrame(ERR_CODE_ILLEGAL_ARG); return; }
+    int32_t lat, lon;
+    memcpy(&lat, &cmd_frame[1], 4);
+    memcpy(&lon, &cmd_frame[5], 4);
+    uint8_t mode = (len >= 10) ? cmd_frame[9] : 0;
+    if (lat > 90 * 1E6 || lat < -90 * 1E6 || lon > 180 * 1E6 || lon < -180 * 1E6
+        || (lat == 0 && lon == 0)
+        || (sensors.node_lat == 0 && sensors.node_lon == 0)) {
+      writeErrFrame(ERR_CODE_ILLEGAL_ARG); // invalid target or own position unknown
+      return;
+    }
+
+    // Candidates: known repeaters that advertised a position.
+    CorridorCandidate cand[32];
+    uint8_t n_cand = 0;
+    ContactInfo contact;
+    ContactsIterator iter = startContactsIterator(); // skips the anon slots
+    while (iter.hasNext(this, contact) && n_cand < 32) {
+      if (contact.type == ADV_TYPE_REPEATER && (contact.gps_lat != 0 || contact.gps_lon != 0)) {
+        cand[n_cand].lat = contact.gps_lat / 1000000.0f;
+        cand[n_cand].lon = contact.gps_lon / 1000000.0f;
+        n_cand++;
+      }
+    }
+
+    CorridorGenParams params = defaultCorridorGenParams();
+    if ((mode >> 1) & 1) params.n_target = 3; // mode bit 1: denser width preset
+    // mode bit 0 (force) — reserved (no on-node cache yet)
+
+    CorridorProposal proposal;
+    proposeCorridor(sensors.node_lat, sensors.node_lon,
+                    lat / 1000000.0f, lon / 1000000.0f, cand, n_cand, params, proposal);
+
+    int i = 0;
+    out_frame[i++] = RESP_CODE_PROPOSE_CORRIDOR;
+    out_frame[i++] = proposal.reason;
+    out_frame[i++] = proposal.count;
+    for (uint8_t t = 0; t < proposal.count; t++) {
+      uint32_t word = encodeCorridorTriple(proposal.lats[t], proposal.lons[t], proposal.radius_codes[t]);
+      memcpy(&out_frame[i], &word, 4);
+      i += 4;
+    }
+    _serial->writeFrame(out_frame, i);
   } else if (cmd_frame[0] == CMD_SEND_CHANNEL_DATA) { // send GroupChannel datagram
     if (len < 4) {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG);
