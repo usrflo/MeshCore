@@ -252,14 +252,33 @@ bool MyMesh::nearReaches(int from_i, int to_j, uint8_t hs) const {
 // Client-aware suppression gate. ALWAYS active: a dense mesh always has clients
 // (possibly unlearned), so there is NO "empty set -> suppress everything" fallback.
 // Returns true = "suppressing this flood is safe for attached clients".
-//   Tier A (TRACE/CONTROL):   pure infrastructure -> clients never need -> suppress OK.
+//   Tier A (TRACE/CONTROL, ADVERT with originator ADV_TYPE_REPEATER): pure
+//                             infrastructure -> clients never need -> suppress OK.
 //   Tier C (REQ/RESPONSE/TXT_MSG/PATH/ANON_REQ): addressed -> forward iff dest is an
 //                             attached client, so suppress OK iff dest is NOT one.
-//   Tier B (ADVERT/GRP_*/ACK/MULTIPART/...): broadcast, can't address-check, clients may
-//                             need -> NEVER suppress (always forward).
+//   Tier B (client/room/sensor ADVERTs, GRP_*/ACK/MULTIPART/...): broadcast, can't
+//                             address-check, clients may need -> NEVER suppress.
 bool MyMesh::clientProtectionAllowsSuppress(const mesh::Packet* pkt, uint32_t now) const {
   uint8_t pt = pkt->getPayloadType();
   if (pt == PAYLOAD_TYPE_TRACE || pt == PAYLOAD_TYPE_CONTROL) return true;          // Tier A
+  if (pt == PAYLOAD_TYPE_ADVERT) {
+    // Adverts are split by originator type. A REPEATER advert is infrastructure:
+    // every repeater learns its neighbours from any overheard copy (onAdvertRecv
+    // fires on receipt -- suppression only ever cancels M's OWN rebroadcast, never
+    // M's receive path), so it is as suppressible as TRACE/CONTROL. Every other
+    // advert (client/room/sensor) stays Tier B: clients may need it. Malformed or
+    // too short -> Tier B (forward, safe), like the addressed types.
+    // Advert payload as parsed by Mesh::onRecvPacket: [pub_key][timestamp 4]
+    // [signature][app_data]; app_data[0] = flags byte, low nibble = ADV_TYPE_*.
+    int off = PUB_KEY_SIZE + 4 + SIGNATURE_SIZE;
+    if (pkt->payload_len > off) {              // parser reads app_data[0] unconditionally
+      int alen = pkt->payload_len - off;
+      if (alen > MAX_ADVERT_DATA_SIZE) alen = MAX_ADVERT_DATA_SIZE;   // name buffer is MAX_ADVERT_DATA_SIZE
+      AdvertDataParser parser(&pkt->payload[off], (uint8_t)alen);
+      if (parser.isValid() && parser.getType() == ADV_TYPE_REPEATER) return true;   // Tier A
+    }
+    return false;                                                             // Tier B
+  }
   if (pt == PAYLOAD_TYPE_REQ || pt == PAYLOAD_TYPE_RESPONSE || pt == PAYLOAD_TYPE_TXT_MSG ||
       pt == PAYLOAD_TYPE_PATH || pt == PAYLOAD_TYPE_ANON_REQ) {
     if (pkt->payload_len < 1) return false;                                         // malformed -> forward (safe)
