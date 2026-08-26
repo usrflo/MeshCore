@@ -258,10 +258,15 @@ bool MyMesh::nearReaches(int from_i, int to_j, uint8_t hs) const {
 //                             attached client, so suppress OK iff dest is NOT one.
 //   Tier B (client/room/sensor ADVERTs, GRP_*/ACK/MULTIPART/...): broadcast, can't
 //                             address-check, clients may need -> NEVER suppress.
+// The pubkey WHITELIST overrides all tiers: traffic to/from a whitelisted key is
+// never suppressed, even if the node never checked in (attached-client table empty).
 bool MyMesh::clientProtectionAllowsSuppress(const mesh::Packet* pkt, uint32_t now) const {
   uint8_t pt = pkt->getPayloadType();
   if (pt == PAYLOAD_TYPE_TRACE || pt == PAYLOAD_TYPE_CONTROL) return true;          // Tier A
   if (pt == PAYLOAD_TYPE_ADVERT) {
+    // Whitelisted originator (full sender pubkey is in clear at payload[0..31]):
+    // never suppress their adverts, incl. Tier-A repeater adverts.
+    if (pkt->payload_len >= 4 && _prefs.keyInWhitelist(pkt->payload)) return false;
     // Adverts are split by originator type. A REPEATER advert is infrastructure:
     // every repeater learns its neighbours from any overheard copy (onAdvertRecv
     // fires on receipt -- suppression only ever cancels M's OWN rebroadcast, never
@@ -282,7 +287,10 @@ bool MyMesh::clientProtectionAllowsSuppress(const mesh::Packet* pkt, uint32_t no
   if (pt == PAYLOAD_TYPE_REQ || pt == PAYLOAD_TYPE_RESPONSE || pt == PAYLOAD_TYPE_TXT_MSG ||
       pt == PAYLOAD_TYPE_PATH || pt == PAYLOAD_TYPE_ANON_REQ) {
     if (pkt->payload_len < 1) return false;                                         // malformed -> forward (safe)
-    return !attachedClientMatches(pkt->payload[0], now);                            // Tier C
+    if (attachedClientMatches(pkt->payload[0], now)) return false;                  // dest is an attached client
+    if (_prefs.whitelistHash1Match(pkt->payload[0])) return false;                  // dest whitelisted (never checked in)
+    if (pkt->payload_len >= 2 && _prefs.whitelistHash1Match(pkt->payload[1])) return false;  // originated by whitelisted
+    return true;                                                                    // Tier C: suppress OK
   }
   return false;                                                                     // Tier B
 }
@@ -1289,6 +1297,18 @@ uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
 }
 
 mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
+  // Pubkey blacklist: drop at receive, i.e. before dedup (wasSeen), Ed25519 verify,
+  // forwarding and neighbour/attached-client learning. ADVERT + ANON_REQ only --
+  // the only payload types carrying the full sender pubkey in clear (ADVERT
+  // payload[0..31], ANON_REQ payload[1..32]); all other types expose just 1-byte
+  // hashes pre-crypto, and matching those would drop ~1/256 innocent traffic.
+  if (_prefs.blacklist_count > 0) {
+    uint8_t pt = pkt->getPayloadType();
+    const uint8_t* key4 = NULL;
+    if (pt == PAYLOAD_TYPE_ADVERT && pkt->payload_len >= 4) key4 = pkt->payload;
+    else if (pt == PAYLOAD_TYPE_ANON_REQ && pkt->payload_len >= 5) key4 = pkt->payload + 1;
+    if (key4 != NULL && _prefs.keyInBlacklist(key4)) return ACTION_RELEASE;
+  }
   if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
     recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
   } else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {
@@ -1936,6 +1956,14 @@ void MyMesh::removeNeighbor(const uint8_t *pubkey, int key_len) {
     }
   }
 #endif
+}
+
+// A blacklist entry was just added: purge already-learned state for that pubkey
+// prefix, so a spam node stops being treated as a neighbour / attached client
+// until expiry instead of immediately.
+void MyMesh::onBlacklistEntryAdded(const uint8_t *key4) {
+  removeNeighbor(key4, 4);         // prefix match over the neighbour table
+  removeAttachedClient(key4[0]);   // attached-client table is keyed on prefix[0]
 }
 
 void MyMesh::startRegionsLoad() {

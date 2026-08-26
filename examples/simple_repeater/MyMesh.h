@@ -319,6 +319,7 @@ public:
   void formatReachReply(char *reply, const uint8_t* hash, uint8_t hash_len) override;  // reach edges of a near repeater
   void formatNearReply(char *reply) override;                    // near coverage peers + snr_lo threshold
   void removeNeighbor(const uint8_t* pubkey, int key_len) override;
+  void onBlacklistEntryAdded(const uint8_t* key4) override;
   void formatStatsReply(char *reply) override;
   void formatRadioStatsReply(char *reply) override;
   void formatPacketStatsReply(char *reply) override;

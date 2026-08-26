@@ -118,6 +118,14 @@ are broadcasts clients may need, so they stay protected like the other broadcast
 types —, addressed types iff the destination is not an attached client, and all
 remaining broadcasts are always forwarded).
 
+**Whitelist override:** entries of the pubkey **whitelist** (`whitelist add
+<8-hex-prefix>`, see `cli_commands.md` § Key Filters) bypass all tiers — a
+whitelisted key's traffic (to or from) is never suppressed, even if the node
+never checked in and therefore never entered the attached-client table. This is
+the explicit operator override for pre-configured listen-only clients and
+must-serve backbone peers. The pubkey **blacklist** on the other hand acts
+earlier (at receive, on ADVERT/ANON_REQ only) and independently of suppression.
+
 ### SNR-repeat fallback
 
 The coverage-graph test is intentionally conservative: it only suppresses when it

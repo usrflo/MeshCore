@@ -267,6 +267,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       }
     } else if (memcmp(command, "near", 4) == 0) {
       _callbacks->formatNearReply(reply);
+    } else if (memcmp(command, "blacklist", 9) == 0 && (command[9] == 0 || command[9] == ' ')) {
+      handleKeyFilterCmd(_prefs->blacklist_keys, &_prefs->blacklist_count, command + 9, true, reply);
+    } else if (memcmp(command, "whitelist", 9) == 0 && (command[9] == 0 || command[9] == ' ')) {
+      handleKeyFilterCmd(_prefs->whitelist_keys, &_prefs->whitelist_count, command + 9, false, reply);
     } else if (memcmp(command, "tempradio ", 10) == 0) {
       strcpy(tmp, &command[10]);
       const char *parts[5];
@@ -1235,5 +1239,93 @@ void CommonCLI::handleRegionCmd(char* command, char* reply) {
     }
   } else {
     strcpy(reply, "Err - ??");
+  }
+}
+
+// `blacklist [add|del|remove] <8-hex-prefix>` / `whitelist ...` (no args = list).
+// Entries are fixed 4-byte pubkey prefixes (8 hex chars, same convention as the
+// `neighbors`/`clients` output). Adding to the blacklist also lets the role purge
+// learned per-node state via onBlacklistEntryAdded.
+void CommonCLI::handleKeyFilterCmd(uint8_t keys[][4], uint8_t* count, const char* args, bool is_blacklist, char* reply) {
+  const char* name = is_blacklist ? "blacklist" : "whitelist";
+  while (*args == ' ') args++;
+
+  if (*args == 0) {   // list entries
+    int n = *count > MAX_KEY_FILTERS ? MAX_KEY_FILTERS : *count;
+    if (n == 0) {
+      strcpy(reply, "-none-");
+      return;
+    }
+    char* dp = reply;
+    dp += sprintf(dp, "n=%d ", n);
+    for (int i = 0; i < n; i++) {
+      if (dp - reply > 140) { strcpy(dp, "..."); return; }   // stay inside the 160-byte reply buffer
+      if (i > 0) *dp++ = ',';
+      mesh::Utils::toHex(dp, keys[i], 4);
+      dp += 8;
+    }
+    *dp = 0;
+    return;
+  }
+
+  const char* verb = args;
+  const char* sp = strchr(args, ' ');
+  int verb_len = (sp != NULL) ? sp - verb : strlen(verb);
+  bool is_add = (verb_len == 3 && memcmp(verb, "add", 3) == 0);
+  bool is_del = (verb_len == 3 && memcmp(verb, "del", 3) == 0)
+             || (verb_len == 6 && memcmp(verb, "remove", 6) == 0);
+  if (!is_add && !is_del) {
+    sprintf(reply, "Err - usage: %s [add|del] <8-hex-prefix>", name);
+    return;
+  }
+
+  const char* hex = (sp != NULL) ? sp + 1 : verb + verb_len;
+  while (*hex == ' ') hex++;
+  if (strlen(hex) != 8) {
+    strcpy(reply, "Err - key must be an 8-hex-char prefix");
+    return;
+  }
+  for (int i = 0; i < 8; i++) {
+    if (!mesh::Utils::isHexChar(hex[i])) {
+      strcpy(reply, "Err - bad key");
+      return;
+    }
+  }
+  uint8_t key[4];
+  if (!mesh::Utils::fromHex(key, 4, hex)) {   // length already validated; defensive
+    strcpy(reply, "Err - bad key");
+    return;
+  }
+
+  int n = *count > MAX_KEY_FILTERS ? MAX_KEY_FILTERS : *count;
+  int found = -1;
+  for (int i = 0; i < n; i++) {
+    if (memcmp(keys[i], key, 4) == 0) { found = i; break; }
+  }
+
+  if (is_add) {
+    if (found >= 0) {
+      strcpy(reply, "Err - already listed");
+    } else if (n >= MAX_KEY_FILTERS) {
+      sprintf(reply, "Err - full (%d)", MAX_KEY_FILTERS);
+    } else {
+      memcpy(keys[n], key, 4);
+      *count = n + 1;
+      savePrefs();
+      if (is_blacklist) _callbacks->onBlacklistEntryAdded(key);
+      strcpy(reply, "OK");
+    }
+  } else {
+    if (found < 0) {
+      strcpy(reply, "Err - not found");
+    } else {
+      // compact the tail down over the removed entry
+      for (int i = found; i < n - 1; i++) {
+        memcpy(keys[i], keys[i + 1], 4);
+      }
+      *count = n - 1;
+      savePrefs();
+      strcpy(reply, "OK");
+    }
   }
 }
