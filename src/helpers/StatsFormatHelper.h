@@ -24,13 +24,17 @@ public:
                               RadioDriverType& driver,
                               uint32_t total_air_time_ms,
                               uint32_t total_rx_air_time_ms) {
-    sprintf(reply, 
-      "{\"noise_floor\":%d,\"last_rssi\":%d,\"last_snr\":%.2f,\"tx_air_secs\":%u,\"rx_air_secs\":%u}",
+    sprintf(reply,
+      "{\"noise_floor\":%d,\"last_rssi\":%d,\"last_snr\":%.2f,\"tx_air_secs\":%u,\"rx_air_secs\":%u,"
+      "\"chan_util_pct\":%u,\"rx_deaf_pct\":%u,\"rx_err_pct\":%u}",
       (int16_t)radio->getNoiseFloor(),
       (int16_t)driver.getLastRSSI(),
       driver.getLastSNR(),
       total_air_time_ms / 1000,
-      total_rx_air_time_ms / 1000
+      total_rx_air_time_ms / 1000,
+      radio->getChannelUtilizationPct(),
+      radio->getRxDeafnessPct(),
+      radio->getRxErrorRatePct()
     );
   }
 

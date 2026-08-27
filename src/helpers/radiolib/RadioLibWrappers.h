@@ -2,6 +2,7 @@
 
 #include <Mesh.h>
 #include <RadioLib.h>
+#include <helpers/WindowedPercent.h>
 
 #ifdef USE_CC310_HW_CRYPTO
 #include <Adafruit_nRFCrypto.h>
@@ -21,6 +22,15 @@ protected:
   uint16_t _num_floor_samples;
   int32_t _floor_sample_sum;
   uint8_t _preamble_sf;
+
+  // windowed channel-health metrics (sampled in loop())
+  WindowedPercent _busy_win;      // channel busy: own TX, mid-receive, or energy above floor + margin
+  WindowedPercent _deaf_win;      // radio not in RX (listening) mode
+  WindowedCountedRatio _err_win;  // RX attempts with CRC errors
+  uint32_t _last_metric_ms;       // stamp of previous loop() metric sample
+  uint32_t _last_rssi_ms;         // rate limit for the RSSI busy poll
+  uint32_t _last_recv_cnt, _last_err_cnt;  // previous packet counters (for deltas)
+  bool _cur_busy;                 // last busy verdict (held between RSSI polls)
 
   void idle();
   void startRecv();
@@ -59,6 +69,9 @@ public:
   virtual int16_t performChannelScan();
 
   int getNoiseFloor() const override { return _noise_floor; }
+  uint8_t getChannelUtilizationPct() override { return _busy_win.pct(); }
+  uint8_t getRxDeafnessPct() override { return _deaf_win.pct(); }
+  uint8_t getRxErrorRatePct() override { return _err_win.badPct(); }
   void triggerNoiseFloorCalibrate(int threshold) override;
   void setCADEnabled(bool enable) override { _cad_enabled = enable; }
   void resetAGC() override;
