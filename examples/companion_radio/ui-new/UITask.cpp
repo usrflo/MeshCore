@@ -170,6 +170,20 @@ class HomeScreen : public UIScreen {
 #endif
   }
 
+  // Channel-health mini bar (battery-indicator pattern): a small bar with a
+  // right-aligned "NN%" value at the display's right edge. Positive framing:
+  // a full bar is good; it turns warning-coloured below 'warn_below'.
+  void drawHealthBar(DisplayDriver& display, int y, uint8_t pct, uint8_t warn_below) {
+    display.setColor(pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt);
+    char val[8];
+    sprintf(val, "%u%%", pct);
+    display.drawTextRightAlign(display.width(), y, val);
+    const int bar_w = 24;
+    int bar_x = display.width() - display.getTextWidth(val) - 3 - bar_w;
+    display.drawRect(bar_x, y + 1, bar_w, 7);
+    display.fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
+  }
+
   CayenneLPP sensors_lpp;
   int sensors_nb = 0;
   bool sensors_scroll = false;
@@ -308,24 +322,38 @@ public:
         display.print(tmp);
       }
     } else if (_page == HomePage::RADIO) {
-      display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
-      // freq / sf
+      // freq / sf, plus RX quality (100 - windowed RX error rate)
+      display.setColor(UIColor::primary_txt);
       display.setCursor(0, 20);
-      sprintf(tmp, "FQ: %06.3f   SF: %d", _node_prefs->freq, _node_prefs->sf);
+      sprintf(tmp, "FQ:%06.3f SF%d", _node_prefs->freq, _node_prefs->sf);
       display.print(tmp);
+      {
+        uint8_t rxq = 100 - radio_driver.getRxErrorRatePct();
+        display.setColor(rxq < 90 ? UIColor::warning_txt : UIColor::primary_txt);
+        sprintf(tmp, "Q:%u%%", rxq);
+        display.drawTextRightAlign(display.width(), 20, tmp);
+      }
 
+      // bw / cr, plus noise floor
+      display.setColor(UIColor::primary_txt);
       display.setCursor(0, 31);
-      sprintf(tmp, "BW: %03.2f     CR: %d", _node_prefs->bw, _node_prefs->cr);
+      sprintf(tmp, "BW:%03.2f CR%d", _node_prefs->bw, _node_prefs->cr);
       display.print(tmp);
+      sprintf(tmp, "NF:%d", radio_driver.getNoiseFloor());
+      display.drawTextRightAlign(display.width(), 31, tmp);
 
-      // tx power,  noise floor
+      // channel free % (100 - windowed utilization) with mini bar
+      display.setColor(UIColor::primary_txt);
       display.setCursor(0, 42);
-      sprintf(tmp, "TX: %ddBm", _node_prefs->tx_power_dbm);
-      display.print(tmp);
+      display.print("CH frei");
+      drawHealthBar(display, 42, 100 - radio_driver.getChannelUtilizationPct(), 50);
+
+      // RX readiness % (100 - windowed deafness) with mini bar
+      display.setColor(UIColor::primary_txt);
       display.setCursor(0, 53);
-      sprintf(tmp, "Noise floor: %d", radio_driver.getNoiseFloor());
-      display.print(tmp);
+      display.print("RX-bereit");
+      drawHealthBar(display, 53, 100 - radio_driver.getRxDeafnessPct(), 80);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - 32) / 2, 18,
