@@ -1206,6 +1206,15 @@ void MyMesh::handleCmdFrame(size_t len) {
     int prefix_len = ep - (char *) &temp[5];
     int copy_len = text_len;
     if (copy_len + prefix_len > MAX_TEXT_LEN) copy_len = MAX_TEXT_LEN - prefix_len;
+    // Corridor-unaware firmware parses the corridor region as part of the
+    // payload, so corridor + payload must fit ITS MAX_PACKET_PAYLOAD budget:
+    // payload = 1 (channel hash) + CIPHER_MAC_SIZE + CBC-pad(data) ≤ data +
+    // CIPHER_BLOCK_SIZE + 2.  Truncate the text rather than emit a packet that
+    // old repeaters would silently drop as oversized.
+    int max_data = MAX_PACKET_PAYLOAD - CIPHER_BLOCK_SIZE - CIPHER_MAC_SIZE - 1
+                 - (int)n_triples * CORRIDOR_TRIPLE_BYTES;
+    if (copy_len + prefix_len + 5 > max_data) copy_len = max_data - 5 - prefix_len;
+    if (copy_len < 0) copy_len = 0;
     memcpy(ep, &cmd_frame[i], copy_len);
     ep[copy_len] = 0;
     mesh::Packet *pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel.channel, temp, 5 + prefix_len + copy_len);

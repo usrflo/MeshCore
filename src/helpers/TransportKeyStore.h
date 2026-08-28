@@ -2,7 +2,6 @@
 
 #include <Arduino.h>   // needed for PlatformIO
 #include <Packet.h>
-#include <helpers/IdentityStore.h>
 
 struct TransportKey {
   uint8_t key[16];

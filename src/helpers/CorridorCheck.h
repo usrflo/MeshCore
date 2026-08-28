@@ -9,14 +9,23 @@
 //
 // Wire layout (Flood Corridor, "Model X"):
 //   code_1 (transport_codes[0]) = transport code of the well-known pseudo-region
-//                                 "corridor" (auto-key from "#corridor").  Old
-//                                 repeaters don't know it → drop at the region
-//                                 gate (graceful, rolling deployment).
+//                                 "corridor" (auto-key from "#corridor"),
+//                                 computed over the WIRE view (corridor region
+//                                 included, see TransportKey::calcTransportCode).
 //   code_2 (transport_codes[1]) bits 15-12 = N (triple count, 0..8); 0 = none.
 //   corridor region: N * CORRIDOR_TRIPLE_BYTES, carried in Packet::corridor[]
 //                     (serialized between path and payload).  The payload stays
 //                     the standard [channel_hash][MAC][ciphertext] — receivers
-//                     and the code_1 HMAC are unaware of the corridor.
+//                     are unaware of the corridor.
+//
+// Backward compatibility ("rolling deployment", wire view): corridor-unaware
+// repeaters parse the corridor bytes as the front of the payload, so they
+// compute code_1 over the very same byte string.  An OLD repeater configured
+// with the auto-hashtag region "corridor" (CLI: `region def corridor` +
+// `region allowf corridor` — same SHA256("#corridor") key, no firmware update)
+// therefore matches and forwards corridor packets VERBATIM (blindly — it
+// cannot geo-filter).  Old repeaters WITHOUT that region still drop them at
+// the region gate, and "allow Flood" never applies to transport floods.
 //
 // Wire encoding per triple (4 bytes / 32 bits):
 //   Bits 31-18  lat_encoded  14-bit offset-binary  (lat +90)/180 × 16383
@@ -100,7 +109,9 @@ inline const TransportKey& corridorPseudoKey() {
     return key;
 }
 
-// True iff code_1 matches the corridor pseudo-region for this packet's payload.
+// True iff code_1 matches the corridor pseudo-region for this packet's wire
+// view (corridor region + payload — the same byte string corridor-unaware
+// firmware hashes, which is what makes the region-config compat path work).
 inline bool matchesCorridorRegion(const mesh::Packet* pkt) {
     return pkt->transport_codes[0] == corridorPseudoKey().calcTransportCode(pkt);
 }

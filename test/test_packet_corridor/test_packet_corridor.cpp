@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "Packet.h"
+#include <helpers/TransportKeyStore.h>
+#include <helpers/CorridorCheck.h>
 
 using namespace mesh;
 
@@ -94,6 +96,89 @@ TEST(PacketCorridor, PlainFloodUnaffected) {
     ASSERT_TRUE(q.readFrom(buf, len));
     EXPECT_EQ(0u, q.getCorridorByteLen());
     EXPECT_EQ(1u, q.payload_len);
+}
+
+// ---------------------------------------------------------------------------
+// Backward compatibility ("rolling deployment"):
+//
+// Corridor-UNAWARE firmware (upstream dev without Flood Corridor) has no
+// corridor region — its tryParsePacket() makes everything after the path one
+// flat payload, with the corridor bytes at the front, and its
+// TransportKey::calcTransportCode() hashes type + that flat view.  The
+// corridor-aware implementation hashes type + corridor + payload — the very
+// same byte string — so an old repeater configured with the auto-hashtag
+// region "corridor" (`region def corridor` + `region allowf corridor`, same
+// SHA256("#corridor") key, no firmware update) matches code_1 in findMatch()
+// and forwards corridor packets verbatim.
+// ---------------------------------------------------------------------------
+
+// Replicates Dispatcher::tryParsePacket() of corridor-unaware firmware:
+// header, transport codes, path — then a single flat payload (corridor
+// absorbed at the front, no code_2 nibble interpretation).
+static Packet parseCorridorUnaware(const uint8_t* raw, int len) {
+    Packet p;
+    int i = 0;
+    p.header = raw[i++];
+    if (p.hasTransportCodes()) {
+        memcpy(&p.transport_codes[0], &raw[i], 2); i += 2;
+        memcpy(&p.transport_codes[1], &raw[i], 2); i += 2;
+    } else {
+        p.transport_codes[0] = p.transport_codes[1] = 0;
+    }
+    p.path_len = raw[i++];
+    int path_byte_len = (p.path_len & 63) * p.getPathHashSize();
+    memcpy(p.path, &raw[i], path_byte_len); i += path_byte_len;
+    p.payload_len = len - i;   // flat: corridor bytes + actual payload
+    memcpy(p.payload, &raw[i], p.payload_len);
+    return p;
+}
+
+TEST(PacketCorridor, TransportCodeMatchesCorridorUnawareView) {
+    for (uint8_t n = 0; n <= MAX_CORRIDOR_TRIPLES; n++) {
+        Packet p = makeCorridorPacket(n, 40);
+        // sender (corridor-aware): code_1 over the wire view
+        uint16_t code1 = corridorPseudoKey().calcTransportCode(&p);
+        EXPECT_NE(0u, code1) << "n=" << (int)n;
+
+        uint8_t buf[255];
+        uint8_t len = p.writeTo(buf);
+
+        Packet old = parseCorridorUnaware(buf, len);
+        // Old firmware never interprets the code_2 nibble — clearing it keeps
+        // getCorridorByteLen() at 0 so calcTransportCode() hashes exactly the
+        // old firmware's byte string (type + flat payload).
+        old.transport_codes[1] &= 0x0FFF;
+
+        EXPECT_EQ(0u, old.getCorridorByteLen()) << "n=" << (int)n;
+        ASSERT_EQ(p.getCorridorByteLen() + p.payload_len, old.payload_len) << "n=" << (int)n;
+        uint16_t code_old = corridorPseudoKey().calcTransportCode(&old);
+        EXPECT_EQ(code1, code_old) << "n=" << (int)n;
+    }
+}
+
+TEST(PacketCorridor, AutoHashtagRegionKeyMatchesPseudoKey) {
+    // An old repeater configured with region "corridor" derives its transport
+    // key from the implicit auto-hashtag name "#corridor" (RegionMap::
+    // getTransportKeysFor() prefixes '#', TransportKeyStore::getAutoKeyFor()
+    // hashes the name) — which must be byte-identical to the corridor
+    // pseudo-region key.
+    TransportKeyStore store;
+    TransportKey region_key;
+    store.getAutoKeyFor(1, "#corridor", region_key);
+    EXPECT_EQ(0, memcmp(region_key.key, corridorPseudoKey().key, sizeof(region_key.key)));
+}
+
+TEST(PacketCorridor, TransportCodeCoversCorridorBytes) {
+    // Guard against a silent regression to payload-only hashing: if the
+    // corridor bytes dropped out of the HMAC input, the code would no longer
+    // match the corridor-unaware view (test above) — old repeaters with the
+    // "corridor" region configured would mismatch and drop again.
+    Packet a = makeCorridorPacket(3, 40);
+    Packet b = makeCorridorPacket(3, 40);
+    b.corridor[0] ^= 0xFF;   // same payload, different corridor geometry
+    uint16_t ca = corridorPseudoKey().calcTransportCode(&a);
+    uint16_t cb = corridorPseudoKey().calcTransportCode(&b);
+    EXPECT_NE(ca, cb);
 }
 
 int main(int argc, char** argv) {

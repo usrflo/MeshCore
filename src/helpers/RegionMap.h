@@ -3,6 +3,7 @@
 #include <Arduino.h>   // needed for PlatformIO
 #include <Packet.h>
 #include "TransportKeyStore.h"
+#include <helpers/IdentityStore.h>   // FILESYSTEM (used by load/save below)
 
 #ifndef MAX_REGION_ENTRIES
   #define MAX_REGION_ENTRIES  32

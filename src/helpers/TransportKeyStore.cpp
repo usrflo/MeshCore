@@ -7,6 +7,16 @@ uint16_t TransportKey::calcTransportCode(const mesh::Packet* packet) const {
   sha.resetHMAC(key, sizeof(key));
   uint8_t type = packet->getPayloadType();
   sha.update(&type, 1);
+  // Flood Corridor: hash the *wire* view, corridor region first.  Corridor-
+  // unaware firmware parses the corridor bytes as the front of the payload, so
+  // including them here makes both firmwares hash the identical byte string —
+  // an old repeater configured with the auto-hashtag region "corridor"
+  // (region def corridor + region allowf corridor) matches code_1 and forwards
+  // corridor packets verbatim.  Packets without a corridor are unaffected.
+  uint8_t corridor_len = packet->getCorridorByteLen();
+  if (corridor_len > 0) {
+    sha.update(packet->corridor, corridor_len);
+  }
   sha.update(packet->payload, packet->payload_len);
   sha.finalizeHMAC(key, sizeof(key), &code, 2);
   if (code == 0) {     // reserve codes 0000 and FFFF

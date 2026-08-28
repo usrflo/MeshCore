@@ -576,8 +576,12 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
     recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
     // Flood Corridor (Model X): if no configured region matched, accept the
     // well-known "corridor" pseudo-region so corridor-aware repeaters forward
-    // and apply the geo-filter in allowPacketForward().  Old repeaters don't
-    // know this pseudo-region → recv_pkt_region stays NULL → clean drop.
+    // and apply the geo-filter in allowPacketForward().  Note: a configured
+    // "corridor" region matches via findMatch() above (same auto-key), which is
+    // also how OLD, corridor-unaware repeaters can be opted in to forward
+    // corridor packets verbatim (`region def corridor` + `region allowf
+    // corridor` — they cannot geo-filter, but the code_1 HMAC covers the wire
+    // view, so it matches without firmware changes).
     if (recv_pkt_region == NULL && pkt->getCorridorCount() > 0 && matchesCorridorRegion(pkt)) {
       recv_pkt_region = &corridor_match_region;
     }
