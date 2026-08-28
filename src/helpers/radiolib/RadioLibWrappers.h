@@ -2,6 +2,7 @@
 
 #include <Mesh.h>
 #include <RadioLib.h>
+#include <helpers/WindowedPercent.h>
 
 #define NUM_NOISE_FLOOR_SAMPLES  64   // RSSI samples reduced to a median per noise-floor calibration block
 
@@ -35,6 +36,15 @@ protected:
   uint32_t _last_floor_sample_at;   // millis() of the last accepted RSSI sample (rate-limits block sampling)
   uint8_t _held_block_count;   // consecutive held blocks since the last published noise-floor value
   uint8_t _preamble_sf;
+
+  // windowed channel-health metrics (sampled in loop())
+  WindowedPercent _busy_win;      // channel busy: own TX, mid-receive, or energy above floor + margin
+  WindowedPercent _deaf_win;      // radio not in RX (listening) mode
+  WindowedCountedRatio _err_win;  // RX attempts with CRC errors
+  uint32_t _last_metric_ms;       // stamp of previous loop() metric sample
+  uint32_t _last_rssi_ms;         // rate limit for the RSSI busy poll
+  uint32_t _last_recv_cnt, _last_err_cnt;  // previous packet counters (for deltas)
+  bool _cur_busy;                 // last busy verdict (held between RSSI polls)
 
   void idle();
   void startRecv();
@@ -73,6 +83,9 @@ public:
   virtual int16_t performChannelScan();
 
   int getNoiseFloor() const override { return _noise_floor; }
+  uint8_t getChannelUtilizationPct() override { return _busy_win.pct(); }
+  uint8_t getRxDeafnessPct() override { return _deaf_win.pct(); }
+  uint8_t getRxErrorRatePct() override { return _err_win.badPct(); }
   void triggerNoiseFloorCalibrate(int threshold) override;
   void setCADEnabled(bool enable) override { _cad_enabled = enable; }
   void resetAGC() override;
@@ -106,8 +119,10 @@ public:
 
   void random(uint8_t* dest, size_t sz) override {
 #ifdef USE_CC310_HW_CRYPTO
-    // CC310 TRNG is higher quality and environment-independent vs radio RSSI noise.
     nRFCrypto.Random.generate(dest, (uint16_t)sz);
+    for (int i = 0; i < sz; i++) {
+      dest[i] ^= _radio->randomByte() ^ (::random(0, 256) & 0xFF); // combine with Radio's entropy
+    }
 #else
     for (int i = 0; i < sz; i++) {
       dest[i] = _radio->randomByte() ^ (::random(0, 256) & 0xFF);

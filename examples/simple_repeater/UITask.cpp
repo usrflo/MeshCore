@@ -29,6 +29,24 @@ static const uint8_t meshcore_logo [] PROGMEM = {
     0xe3, 0xe3, 0x8f, 0xff, 0x1f, 0xfc, 0x3c, 0x0e, 0x1f, 0xf8, 0xff, 0xf8, 0x70, 0x3c, 0x7f, 0xf8, 
 };
 
+// Channel-health bar row (battery-indicator pattern): label at the left, a
+// small bar mid-right and a right-aligned "NN%" value. Positive framing: a
+// full bar is good; it turns warning-coloured below 'warn_below'.
+static void drawHealthBar(DisplayDriver* display, int y, const char* label, uint8_t pct, uint8_t warn_below) {
+  display->setTextSize(1);
+  display->setColor(UIColor::primary_txt);
+  display->setCursor(0, y);
+  display->print(label);
+  char val[8];
+  sprintf(val, "%u%%", pct);
+  display->drawTextRightAlign(display->width(), y, val);
+  const int bar_w = 40;
+  int bar_x = display->width() - display->getTextWidth(val) - 3 - bar_w;
+  display->setColor(pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt);
+  display->drawRect(bar_x, y + 1, bar_w, 7);
+  display->fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
+}
+
 void UITask::begin(NodePrefs* node_prefs, const char* build_date, const char* firmware_version) {
   _prevBtnState = HIGH;
   _auto_off = millis() + AUTO_OFF_MILLIS;
@@ -106,6 +124,11 @@ void UITask::renderCurrScreen() {
     _display->setCursor(0, 30);
     sprintf(tmp, "BW: %03.2f CR: %d", _node_prefs->bw, _node_prefs->cr);
     _display->print(tmp);
+
+    // channel-health bars (windowed, positive framing: full bar = good)
+    drawHealthBar(_display, 38, "CH frei", 100 - radio_driver.getChannelUtilizationPct(), 50);
+    drawHealthBar(_display, 47, "RX-bereit", 100 - radio_driver.getRxDeafnessPct(), 80);
+    drawHealthBar(_display, 56, "RX-Guete", 100 - radio_driver.getRxErrorRatePct(), 90);
   }
 }
 

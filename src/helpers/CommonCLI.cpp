@@ -183,6 +183,7 @@ void CommonCLI::savePrefs() {
     _prefs->advert_interval = 0;  // turn it off, now that device has been manually configured
   }
   _callbacks->savePrefs();
+  _prefs->clearDirty();
 }
 
 uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
@@ -199,6 +200,16 @@ uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
 }
 
 void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {
+    if (_prefs->getRadioPrefs()->handleCommand(command, sender_timestamp, reply)) {   // is a radio CLI command?
+      if (_prefs->getRadioPrefs()->isDirty()) { savePrefs(); }
+      return;
+    }
+    // hook for variant-specific CLI processing
+    if (_board->handleCommand(command, sender_timestamp, reply)) {
+      if (_prefs->isDirty()) { savePrefs(); }
+      return;
+    }
+
     if (memcmp(command, "poweroff", 8) == 0 || memcmp(command, "shutdown", 8) == 0) {
       _board->powerOff();  // doesn't return
     } else if (memcmp(command, "reboot", 6) == 0) {
@@ -495,31 +506,9 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
 
 void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* reply) {
   const char* config = &command[4];
-  if (memcmp(config, "dutycycle ", 10) == 0) {
-    float dc = atof(&config[10]);
-    if (dc < 1 || dc > 100) {
-      strcpy(reply, "ERROR: dutycycle must be 1-100");
-    } else {
-      _prefs->airtime_factor = (100.0f / dc) - 1.0f;
-      savePrefs();
-      float actual = 100.0f / (_prefs->airtime_factor + 1.0f);
-      int a_int = (int)actual;
-      int a_frac = (int)((actual - a_int) * 10.0f + 0.5f);
-      sprintf(reply, "OK - %d.%d%%", a_int, a_frac);
-    }
-  } else if (memcmp(config, "af ", 3) == 0) {
-    _prefs->airtime_factor = atof(&config[3]);
-    savePrefs();
-    strcpy(reply, "OK");
-  } else if (memcmp(config, "int.thresh ", 11) == 0) {
-    _prefs->interference_threshold = atoi(&config[11]);
-    savePrefs();
-    strcpy(reply, "OK");
-  } else if (memcmp(config, "cad ", 4) == 0) {
-    _prefs->cad_enabled = memcmp(&config[4], "on", 2) == 0;
-    savePrefs();
-    strcpy(reply, "OK");
-  } else if (memcmp(config, "flood.suppress ", 15) == 0) {
+  // (radio-pref set commands -- dutycycle/af/int.thresh/cad/agc.reset.interval/multi.acks/tx/freq --
+  //  moved upstream into CommonRadioPrefs::handleCommand, which runs before this.)
+  if (memcmp(config, "flood.suppress ", 15) == 0) {
     _prefs->flood_suppress = memcmp(&config[15], "on", 2) == 0;
     savePrefs();
     strcpy(reply, "OK");
@@ -539,14 +528,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     int db = atoi(&config[15]);
     if (db >= -9 && db <= 30) { _prefs->trace_tx_power_dbm = db; savePrefs(); strcpy(reply, "OK"); }
     else strcpy(reply, "Error, must be -9..30 dB");
-  } else if (memcmp(config, "agc.reset.interval ", 19) == 0) {
-    _prefs->agc_reset_interval = atoi(&config[19]) / 4;
-    savePrefs();
-    sprintf(reply, "OK - interval rounded to %d", ((uint32_t) _prefs->agc_reset_interval) * 4);
-  } else if (memcmp(config, "multi.acks ", 11) == 0) {
-    _prefs->multi_acks = atoi(&config[11]);
-    savePrefs();
-    strcpy(reply, "OK");
   } else if (memcmp(config, "max.resend ", 11) == 0) {
     int v = atoi(&config[11]);
     if (v < 0 || v > 3) {
@@ -609,77 +590,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->disable_fwd = memcmp(&config[7], "off", 3) == 0;
     savePrefs();
     strcpy(reply, _prefs->disable_fwd ? "OK - repeat is now OFF" : "OK - repeat is now ON");
-  } else if (memcmp(config, "radio.rxgain ", 13) == 0) {
-    bool enabled = memcmp(&config[13], "on", 2) == 0;
-    _prefs->rx_boosted_gain = enabled;
-    savePrefs();
-    if (_callbacks->setRxBoostedGain(enabled)) {
-      strcpy(reply, "OK");
-    } else {
-      strcpy(reply, "Error: unsupported");
-    }
-  } else if (memcmp(config, "radio.fem.rxgain ", 17) == 0) {
-    if (!_board->canControlLoRaFemLna()) {
-      strcpy(reply, "Error: unsupported");
-    } else if (memcmp(&config[17], "on", 2) == 0) {
-      if (_board->setLoRaFemLnaEnabled(true)) {
-        _prefs->radio_fem_rxgain = 1;
-        savePrefs();
-        strcpy(reply, "OK - LoRa FEM RX gain on");
-      } else {
-        strcpy(reply, "Error: failed to apply LoRa FEM RX gain");
-      }
-    } else if (memcmp(&config[17], "off", 3) == 0) {
-      if (_board->setLoRaFemLnaEnabled(false)) {
-        _prefs->radio_fem_rxgain = 0;
-        savePrefs();
-        strcpy(reply, "OK - LoRa FEM RX gain off");
-      } else {
-        strcpy(reply, "Error: failed to apply LoRa FEM RX gain");
-      }
-    } else {
-      strcpy(reply, "Error: state must be on or off");
-    }
-  } else if (memcmp(config, "radio.fem.txgain ", 17) == 0) {
-    if (!_board->canControlLoRaFemPaGain()) {
-      strcpy(reply, "Error: unsupported");
-    } else if (memcmp(&config[17], "on", 2) == 0) {
-      if (_board->setLoRaFemPaGainEnabled(true)) {
-        _prefs->radio_fem_txgain = 1;
-        savePrefs();
-        strcpy(reply, "OK - LoRa FEM TX gain on");
-      } else {
-        strcpy(reply, "Error: failed to apply LoRa FEM TX gain");
-      }
-    } else if (memcmp(&config[17], "off", 3) == 0) {
-      if (_board->setLoRaFemPaGainEnabled(false)) {
-        _prefs->radio_fem_txgain = 0;
-        savePrefs();
-        strcpy(reply, "OK - LoRa FEM TX gain off");
-      } else {
-        strcpy(reply, "Error: failed to apply LoRa FEM TX gain");
-      }
-    } else {
-      strcpy(reply, "Error: state must be on or off");
-    }
-  } else if (memcmp(config, "radio ", 6) == 0) {
-    strcpy(tmp, &config[6]);
-    const char *parts[4];
-    int num = mesh::Utils::parseTextParts(tmp, parts, 4);
-    float freq  = num > 0 ? strtof(parts[0], nullptr) : 0.0f;
-    float bw    = num > 1 ? strtof(parts[1], nullptr) : 0.0f;
-    uint8_t sf  = num > 2 ? atoi(parts[2]) : 0;
-    uint8_t cr  = num > 3 ? atoi(parts[3]) : 0;
-    if (freq >= 150.0f && freq <= 2500.0f && sf >= 5 && sf <= 12 && cr >= 5 && cr <= 8 && bw >= 7.0f && bw <= 500.0f) {
-      _prefs->sf = sf;
-      _prefs->cr = cr;
-      _prefs->freq = freq;
-      _prefs->bw = bw;
-      _callbacks->savePrefs();
-      strcpy(reply, "OK - reboot to apply");
-    } else {
-      strcpy(reply, "Error, invalid radio params");
-    }
   } else if (memcmp(config, "lat ", 4) == 0) {
     _prefs->node_lat = atof(&config[4]);
     savePrefs();
@@ -688,24 +598,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->node_lon = atof(&config[4]);
     savePrefs();
     strcpy(reply, "OK");
-  } else if (memcmp(config, "rxdelay ", 8) == 0) {
-    float db = atof(&config[8]);
-    if (db >= 0 && db <= 20.0f) {
-      _prefs->rx_delay_base = db;
-      savePrefs();
-      strcpy(reply, "OK");
-    } else {
-      strcpy(reply, "Error, must be 0-20");
-    }
-  } else if (memcmp(config, "txdelay ", 8) == 0) {
-    float f = atof(&config[8]);
-    if (f >= 0 && f <= 2.0f) {
-      _prefs->tx_delay_factor = f;
-      savePrefs();
-      strcpy(reply, "OK");
-    } else {
-      strcpy(reply, "Error, must be 0-2");
-    }
   } else if (memcmp(config, "flood.max.unscoped ", 19) == 0) {
     uint8_t m = atoi(&config[19]);
     if (m <= 64) {
@@ -733,15 +625,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     } else {
       strcpy(reply, "Error, max 64");
     }
-  } else if (memcmp(config, "direct.txdelay ", 15) == 0) {
-    float f = atof(&config[15]);
-    if (f >= 0 && f <= 2.0f) {
-      _prefs->direct_tx_delay_factor = f;
-      savePrefs();
-      strcpy(reply, "OK");
-    } else {
-      strcpy(reply, "Error, must be 0-2");
-    }
   } else if (memcmp(config, "owner.info ", 11) == 0) {
     config += 11;
     char *dp = _prefs->owner_info;
@@ -752,16 +635,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     *dp = 0;
     savePrefs();
     strcpy(reply, "OK");
-  } else if (memcmp(config, "path.hash.mode ", 15) == 0) {
-    config += 15;
-    uint8_t mode = atoi(config);
-    if (mode < 3) {
-      _prefs->path_hash_mode = mode;
-      savePrefs();
-      strcpy(reply, "OK");
-    } else {
-      strcpy(reply, "Error, must be 0,1, or 2");
-    }
   } else if (memcmp(config, "loop.detect ", 12) == 0) {
     config += 12;
     uint8_t mode;
@@ -782,11 +655,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
       savePrefs();
       strcpy(reply, "OK");
     }
-  } else if (memcmp(config, "tx ", 3) == 0) {
-    _prefs->tx_power_dbm = atoi(&config[3]);
-    savePrefs();
-    _callbacks->setTxPower(_prefs->tx_power_dbm);
-    strcpy(reply, "OK");
   } else if (sender_timestamp == 0 && memcmp(config, "freq ", 5) == 0) {
     _prefs->freq = atof(&config[5]);
     savePrefs();
@@ -883,18 +751,9 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
 
 void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* reply) {
   const char* config = &command[4];
-  if (memcmp(config, "dutycycle", 9) == 0) {
-    float dc = 100.0f / (_prefs->airtime_factor + 1.0f);
-    int dc_int = (int)dc;
-    int dc_frac = (int)((dc - dc_int) * 10.0f + 0.5f);
-    sprintf(reply, "> %d.%d%%", dc_int, dc_frac);
-  } else if (memcmp(config, "af", 2) == 0) {
-    sprintf(reply, "> %s", StrHelper::ftoa(_prefs->airtime_factor));
-  } else if (memcmp(config, "int.thresh", 10) == 0) {
-    sprintf(reply, "> %d", (uint32_t) _prefs->interference_threshold);
-  } else if (memcmp(config, "cad", 3) == 0) {
-    sprintf(reply, "> %s", _prefs->cad_enabled ? "on" : "off");
-  } else if (memcmp(config, "flood.suppress.delay.factor", 27) == 0) {
+  // (radio-pref get commands -- dutycycle/af/int.thresh/cad/agc.reset.interval/multi.acks/tx/freq --
+  //  moved upstream into CommonRadioPrefs::handleCommand, which runs before this.)
+  if (memcmp(config, "flood.suppress.delay.factor", 27) == 0) {
     sprintf(reply, "> %d", (uint32_t) _prefs->flood_suppress_delay_x);
   } else if (memcmp(config, "flood.suppress.snr.hi", 21) == 0) {
     sprintf(reply, "> %d dB", (int) _prefs->flood_suppress_snr_hi);
@@ -903,10 +762,6 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "flood.suppress", 14) == 0) {
     sprintf(reply, "> %s", _prefs->flood_suppress ? "on" : "off");
     _callbacks->formatFloodSuppressRatioReply(reply + strlen(reply));
-  } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
-    sprintf(reply, "> %d", ((uint32_t) _prefs->agc_reset_interval) * 4);
-  } else if (memcmp(config, "multi.acks", 10) == 0) {
-    sprintf(reply, "> %d", (uint32_t) _prefs->multi_acks);
   } else if (memcmp(config, "max.resend", 10) == 0) {
     sprintf(reply, "> %d", (uint32_t) _prefs->max_resend_attempts);
     _callbacks->formatResendRatioReply(reply + strlen(reply));
@@ -931,37 +786,12 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %s", StrHelper::ftoa(_prefs->node_lat));
   } else if (memcmp(config, "lon", 3) == 0) {
     sprintf(reply, "> %s", StrHelper::ftoa(_prefs->node_lon));
-  } else if (memcmp(config, "radio.rxgain", 12) == 0) {
-    sprintf(reply, "> %s", _prefs->rx_boosted_gain ? "on" : "off");
-  } else if (memcmp(config, "radio.fem.rxgain", 16) == 0) {
-    if (!_board->canControlLoRaFemLna()) {
-      strcpy(reply, "Error: unsupported");
-    } else {
-      sprintf(reply, "> %s", _board->isLoRaFemLnaEnabled() ? "on" : "off");
-    }
-  } else if (memcmp(config, "radio.fem.txgain", 16) == 0) {
-    if (!_board->canControlLoRaFemPaGain()) {
-      strcpy(reply, "Error: unsupported");
-    } else {
-      sprintf(reply, "> %s", _board->isLoRaFemPaGainEnabled() ? "on" : "off");
-    }
-  } else if (memcmp(config, "radio", 5) == 0) {
-    char freq[16], bw[16];
-    strcpy(freq, StrHelper::ftoa(_prefs->freq));
-    strcpy(bw, StrHelper::ftoa3(_prefs->bw));
-    sprintf(reply, "> %s,%s,%d,%d", freq, bw, (uint32_t)_prefs->sf, (uint32_t)_prefs->cr);
-  } else if (memcmp(config, "rxdelay", 7) == 0) {
-    sprintf(reply, "> %s", StrHelper::ftoa(_prefs->rx_delay_base));
-  } else if (memcmp(config, "txdelay", 7) == 0) {
-    sprintf(reply, "> %s", StrHelper::ftoa(_prefs->tx_delay_factor));
   } else if (memcmp(config, "flood.max.advert", 16) == 0) {
     sprintf(reply, "> %d", (uint32_t)_prefs->flood_max_advert);
   } else if (memcmp(config, "flood.max.unscoped", 18) == 0) {
     sprintf(reply, "> %d", (uint32_t)_prefs->flood_max_unscoped);
   } else if (memcmp(config, "flood.max", 9) == 0) {
     sprintf(reply, "> %d", (uint32_t)_prefs->flood_max);
-  } else if (memcmp(config, "direct.txdelay", 14) == 0) {
-    sprintf(reply, "> %s", StrHelper::ftoa(_prefs->direct_tx_delay_factor));
   } else if (memcmp(config, "owner.info", 10) == 0) {
     auto start = reply;
     *reply++ = '>';
@@ -972,8 +802,6 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
       sp++;
     }
     *reply = 0;  // set null terminator
-  } else if (memcmp(config, "path.hash.mode", 14) == 0) {
-    sprintf(reply, "> %d", (uint32_t)_prefs->path_hash_mode);
   } else if (memcmp(config, "loop.detect", 11) == 0) {
     if (_prefs->loop_detect == LOOP_DETECT_OFF) {
       strcpy(reply, "> off");
@@ -984,12 +812,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     } else {
       strcpy(reply, "> strict");
     }
-  } else if (memcmp(config, "tx", 2) == 0 && (config[2] == 0 || config[2] == ' ')) {
-    sprintf(reply, "> %d", (int32_t) _prefs->tx_power_dbm);
   } else if (memcmp(config, "trace.tx.power", 14) == 0) {
     sprintf(reply, "> %d dB", (int) _prefs->trace_tx_power_dbm);
-  } else if (memcmp(config, "freq", 4) == 0) {
-    sprintf(reply, "> %s", StrHelper::ftoa(_prefs->freq));
   } else if (memcmp(config, "public.key", 10) == 0) {
     strcpy(reply, "> ");
     mesh::Utils::toHex(&reply[2], _callbacks->getSelfId().pub_key, PUB_KEY_SIZE);

@@ -35,7 +35,7 @@ struct ClientInfo {
 };
 
 #ifndef MAX_CLIENTS
-  #define MAX_CLIENTS           20
+  #define MAX_CLIENTS           32
 #endif
 
 class ClientACL {

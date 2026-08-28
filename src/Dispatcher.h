@@ -63,6 +63,15 @@ public:
 
   virtual int getNoiseFloor() const { return 0; }
 
+  /**
+   * \brief  windowed channel-health metrics over the last ~5 observed seconds.
+   *         All three use "0 = good" semantics; default 0 so radios that do
+   *         not implement them (e.g. ESPNOW) degrade gracefully.
+   */
+  virtual uint8_t getChannelUtilizationPct() { return 0; }  // % of time the channel was busy
+  virtual uint8_t getRxDeafnessPct() { return 0; }          // % of time the radio was NOT in RX
+  virtual uint8_t getRxErrorRatePct() { return 0; }         // % of reception attempts with CRC errors
+
   virtual void triggerNoiseFloorCalibrate(int threshold) { }
 
   virtual void setCADEnabled(bool enable) { }
