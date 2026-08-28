@@ -210,7 +210,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   bool nearReaches(int from_i, int to_j, uint8_t hs) const;  // fresh DIRECTED reach edge: neighbours[from_i] reaches neighbours[to_j] (to_j heard from_i). Freshness is millis-based (TTL is in ms).
   uint32_t sendCoverageTrace(const mesh::Identity& a, const mesh::Identity& b);  // round-trip [a,b,self] TRACE measuring a->b; returns tag (0 on pool-full)
   void stepCoverageMeasurement();  // cadenced: timeout/retry sweep + top-N diff/expiry + send
-  bool clientProtectionAllowsSuppress(const mesh::Packet* pkt, uint32_t now) const;  // 3-tier client-aware gate (always active)
+  bool clientProtectionAllowsSuppress(const mesh::Packet* pkt, uint32_t now) const;  // 3-tier client-aware gate (always active; repeater-originated adverts count as Tier A)
   void addOrRefreshAttachedClient(const uint8_t* prefix, uint8_t plen, uint32_t now);  // seed/refresh attached leaf client (prefix[0] is the match key)
   bool attachedClientMatches(uint8_t hash1, uint32_t now) const; // is hash1 a fresh attached client? (hash1 vs prefix[0])
   void removeAttachedClient(uint8_t hash1);                      // reconcile: node turned out to be a repeater (hash1 vs prefix[0])
@@ -323,6 +323,7 @@ public:
   void formatReachReply(char *reply, const uint8_t* hash, uint8_t hash_len) override;  // reach edges of a near repeater
   void formatNearReply(char *reply) override;                    // near coverage peers + snr_lo threshold
   void removeNeighbor(const uint8_t* pubkey, int key_len) override;
+  void onBlacklistEntryAdded(const uint8_t* key4) override;
   void formatStatsReply(char *reply) override;
   void formatRadioStatsReply(char *reply) override;
   void formatPacketStatsReply(char *reply) override;

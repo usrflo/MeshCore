@@ -186,6 +186,28 @@ Lists the **attached leaf clients** — companion/sensor/room-server nodes for w
 
 ---
 
+### Key Filters (blacklist / whitelist)
+
+**Usage:**
+- `blacklist` — list entries
+- `blacklist add <8-hex-prefix>` — add a public-key prefix
+- `blacklist del <8-hex-prefix>` (or `remove`) — delete an entry
+- `whitelist` / `whitelist add|del <8-hex-prefix>` — same grammar
+
+Both lists hold up to **15 entries of fixed 4-byte pubkey prefixes** (8 hex chars — the same prefix the `neighbors`/`clients` commands display). Entries persist in `/prefs.json`; adding an entry also purges already-learned neighbour/attached-client state for that prefix. The blacklist takes precedence if a key matches both lists.
+
+**Blacklist semantics (repeater + room server):** a matching sender's **ADVERT and ANON_REQ** packets are dropped at receive — before dedup, signature verification, forwarding and neighbour/client learning. This is the tool against nodes that constantly send adverts (each advert is a fresh flood that would otherwise always be forwarded). Other packet types (REQ/RESPONSE/TXT/PATH/GRP) carry only 1-byte hashes in clear, so they *cannot* be prefix-matched before decryption and are unaffected — a blacklisted sender's direct messages still flow. Use `setperm <full-pubkey> 0` to also evict the key from the contacts/ACL.
+
+**Whitelist semantics (repeater only):** the flood-suppression gate never suppresses traffic associated with a whitelisted key, even if that node never checked in (no advert seen, so not in the attached-client table):
+
+- an addressed packet (REQ/RESPONSE/TXT/PATH/ANON_REQ) whose destination hash matches the entry's first byte is always rebroadcast (1-byte match: a stray collision with an unrelated key only causes extra forwarding, never loss), and
+- a flood *originated* by a whitelisted key (src hash match) is always rebroadcast, and
+- an ADVERT whose sender prefix matches exactly is never suppressed.
+
+This guarantees delivery to pre-configured clients that only listen (e.g. sensors that never advertise), and pins "must-serve" peers such as backbone repeaters. The whitelist is orthogonal to `setperm` (no permissions/reply-routing effect) and only takes effect with flood suppression active.
+
+---
+
 ## Statistics
 
 ### Clear Stats

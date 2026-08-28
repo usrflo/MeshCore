@@ -111,8 +111,20 @@ not enter the suppression decision at all: under load a redundant rebroadcast
 is itself the load, and cancelling it is the right move even at some residual
 delivery risk. The only content-based gate is the always-on 3-tier **client
 protection** (`MyMesh::clientProtectionAllowsSuppress`: TRACE/CONTROL free,
-addressed types iff the destination is not an attached client, broadcasts that
-clients may need are always forwarded).
+adverts originated by a **repeater** (`ADV_TYPE_REPEATER`) equally free — every
+repeater learns its neighbours from any overheard copy, and suppression only
+cancels M's own rebroadcast, never M's receive path; client/room/sensor adverts
+are broadcasts clients may need, so they stay protected like the other broadcast
+types —, addressed types iff the destination is not an attached client, and all
+remaining broadcasts are always forwarded).
+
+**Whitelist override:** entries of the pubkey **whitelist** (`whitelist add
+<8-hex-prefix>`, see `cli_commands.md` § Key Filters) bypass all tiers — a
+whitelisted key's traffic (to or from) is never suppressed, even if the node
+never checked in and therefore never entered the attached-client table. This is
+the explicit operator override for pre-configured listen-only clients and
+must-serve backbone peers. The pubkey **blacklist** on the other hand acts
+earlier (at receive, on ADVERT/ANON_REQ only) and independently of suppression.
 
 ### SNR-repeat fallback
 
