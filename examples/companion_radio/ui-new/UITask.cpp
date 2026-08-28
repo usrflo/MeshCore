@@ -326,18 +326,18 @@ public:
       // 5 rows at 9px pitch (text is 8px high) so all three channel-health
       // metrics render as uniform label + bar rows within a 128x64 display
       display.setTextSize(1);
-      // freq / sf, plus noise floor
+      // freq / sf
       display.setColor(UIColor::primary_txt);
       display.setCursor(0, 19);
       sprintf(tmp, "FQ:%06.3f SF%d", _node_prefs->freq, _node_prefs->sf);
       display.print(tmp);
-      sprintf(tmp, "NF:%d", radio_driver.getNoiseFloor());
-      display.drawTextRightAlign(display.width(), 19, tmp);
 
-      // bw / cr
+      // bw / cr, plus noise floor
       display.setCursor(0, 28);
       sprintf(tmp, "BW:%03.2f CR%d", _node_prefs->bw, _node_prefs->cr);
       display.print(tmp);
+      sprintf(tmp, "NF:%d", radio_driver.getNoiseFloor());
+      display.drawTextRightAlign(display.width(), 28, tmp);
 
       // channel free % (100 - windowed utilization) with mini bar
       display.setColor(UIColor::primary_txt);
@@ -352,7 +352,7 @@ public:
 
       // RX quality % (100 - windowed RX error rate) with mini bar
       display.setCursor(0, 55);
-      display.print("RXQ");
+      display.print("RX quality");
       drawHealthBar(display, 55, 100 - radio_driver.getRxErrorRatePct(), 90);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
