@@ -189,12 +189,24 @@ uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
 
 void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {
     if (_prefs->getRadioPrefs()->handleCommand(command, sender_timestamp, reply)) {   // is a radio CLI command?
-      if (_prefs->getRadioPrefs()->isDirty()) { savePrefs(); }
+      if (_prefs->getRadioPrefs()->isDirty()) {
+        _last_save_ok = true;
+        savePrefs();
+        if (!_last_save_ok) {
+          strcpy(reply, "ERR: prefs write failed - 'erase' after saving prv.key as last resort");
+        }
+      }
       return;
     }
     // hook for variant-specific CLI processing
     if (_board->handleCommand(command, sender_timestamp, reply)) {
-      if (_prefs->isDirty()) { savePrefs(); }
+      if (_prefs->isDirty()) {
+        _last_save_ok = true;
+        savePrefs();
+        if (!_last_save_ok) {
+          strcpy(reply, "ERR: prefs write failed - 'erase' after saving prv.key as last resort");
+        }
+      }
       return;
     }
 
