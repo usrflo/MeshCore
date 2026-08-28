@@ -170,18 +170,19 @@ class HomeScreen : public UIScreen {
 #endif
   }
 
-  // Channel-health mini bar (battery-indicator pattern): a small bar with a
-  // right-aligned "NN%" value at the display's right edge. Positive framing:
+  // Channel-health mini bar (battery-indicator pattern): the bar is pinned to
+  // the display's right edge with the "NN%" value right-aligned just before
+  // it, so both stay put while the value's width changes. Positive framing:
   // a full bar is good; it turns warning-coloured below 'warn_below'.
   void drawHealthBar(DisplayDriver& display, int y, uint8_t pct, uint8_t warn_below) {
     display.setColor(pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt);
-    char val[8];
-    sprintf(val, "%u%%", pct);
-    display.drawTextRightAlign(display.width(), y, val);
     const int bar_w = 24;
-    int bar_x = display.width() - display.getTextWidth(val) - 3 - bar_w;
+    int bar_x = display.width() - bar_w - 1;
     display.drawRect(bar_x, y + 1, bar_w, 7);
     display.fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
+    char val[8];
+    sprintf(val, "%u%%", pct);
+    display.drawTextRightAlign(bar_x - 3, y, val);
   }
 
   CayenneLPP sensors_lpp;
@@ -331,7 +332,7 @@ public:
       {
         uint8_t rxq = 100 - radio_driver.getRxErrorRatePct();
         display.setColor(rxq < 90 ? UIColor::warning_txt : UIColor::primary_txt);
-        sprintf(tmp, "Q:%u%%", rxq);
+        sprintf(tmp, "RXQ%u%%", rxq);
         display.drawTextRightAlign(display.width(), 20, tmp);
       }
 
@@ -346,13 +347,13 @@ public:
       // channel free % (100 - windowed utilization) with mini bar
       display.setColor(UIColor::primary_txt);
       display.setCursor(0, 42);
-      display.print("CH frei");
+      display.print("CH free");
       drawHealthBar(display, 42, 100 - radio_driver.getChannelUtilizationPct(), 50);
 
       // RX readiness % (100 - windowed deafness) with mini bar
       display.setColor(UIColor::primary_txt);
       display.setCursor(0, 53);
-      display.print("RX-bereit");
+      display.print("RX ready");
       drawHealthBar(display, 53, 100 - radio_driver.getRxDeafnessPct(), 80);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);

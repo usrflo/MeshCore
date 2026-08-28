@@ -150,22 +150,24 @@ public:
     }
   }
 
-  // Channel-health bar row (battery-indicator pattern): label at the left, a
-  // small bar mid-right and a right-aligned "NN%" value. Positive framing: a
-  // full bar is good; it turns warning-coloured below 'warn_below'.
+  // Channel-health bar row (battery-indicator pattern): label at the left,
+  // then the "NN%" value right-aligned before a bar pinned to the display's
+  // right edge, so value and bar stay put while the value's width changes.
+  // Positive framing: a full bar is good; it turns warning-coloured below
+  // 'warn_below'.
   void drawHealthBar(DisplayDriver& display, int y, const char* label, uint8_t pct, uint8_t warn_below) {
     display.setColor(UIColor::primary_txt);
     display.setTextSize(1);
     display.setCursor(0, y);
     display.print(label);
-    char val[8];
-    sprintf(val, "%u%%", pct);
-    display.drawTextRightAlign(display.width(), y, val);
     const int bar_w = 36;
-    int bar_x = display.width() - display.getTextWidth(val) - 3 - bar_w;
+    int bar_x = display.width() - bar_w - 1;
     display.setColor(pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt);
     display.drawRect(bar_x, y + 1, bar_w, 7);
     display.fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
+    char val[8];
+    sprintf(val, "%u%%", pct);
+    display.drawTextRightAlign(bar_x - 3, y, val);
   }
 
   int render(DisplayDriver& display) override {
@@ -256,9 +258,9 @@ public:
       display.drawTextRightAlign(display.width(), 26, tmp);
 
       // channel-health bars (windowed, positive framing: full bar = good)
-      drawHealthBar(display, 35, "CH frei", 100 - radio_driver.getChannelUtilizationPct(), 50);
-      drawHealthBar(display, 44, "RX-bereit", 100 - radio_driver.getRxDeafnessPct(), 80);
-      drawHealthBar(display, 53, "RX-Guete", 100 - radio_driver.getRxErrorRatePct(), 90);
+      drawHealthBar(display, 35, "CH free", 100 - radio_driver.getChannelUtilizationPct(), 50);
+      drawHealthBar(display, 44, "RX ready", 100 - radio_driver.getRxDeafnessPct(), 80);
+      drawHealthBar(display, 53, "RX quality", 100 - radio_driver.getRxErrorRatePct(), 90);
 
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
