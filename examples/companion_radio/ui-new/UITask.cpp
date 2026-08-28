@@ -323,38 +323,37 @@ public:
         display.print(tmp);
       }
     } else if (_page == HomePage::RADIO) {
+      // 5 rows at 9px pitch (text is 8px high) so all three channel-health
+      // metrics render as uniform label + bar rows within a 128x64 display
       display.setTextSize(1);
-      // freq / sf, plus RX quality (100 - windowed RX error rate)
+      // freq / sf, plus noise floor
       display.setColor(UIColor::primary_txt);
-      display.setCursor(0, 20);
+      display.setCursor(0, 19);
       sprintf(tmp, "FQ:%06.3f SF%d", _node_prefs->freq, _node_prefs->sf);
       display.print(tmp);
-      {
-        uint8_t rxq = 100 - radio_driver.getRxErrorRatePct();
-        display.setColor(rxq < 90 ? UIColor::warning_txt : UIColor::primary_txt);
-        sprintf(tmp, "RXQ%u%%", rxq);
-        display.drawTextRightAlign(display.width(), 20, tmp);
-      }
+      sprintf(tmp, "NF:%d", radio_driver.getNoiseFloor());
+      display.drawTextRightAlign(display.width(), 19, tmp);
 
-      // bw / cr, plus noise floor
-      display.setColor(UIColor::primary_txt);
-      display.setCursor(0, 31);
+      // bw / cr
+      display.setCursor(0, 28);
       sprintf(tmp, "BW:%03.2f CR%d", _node_prefs->bw, _node_prefs->cr);
       display.print(tmp);
-      sprintf(tmp, "NF:%d", radio_driver.getNoiseFloor());
-      display.drawTextRightAlign(display.width(), 31, tmp);
 
       // channel free % (100 - windowed utilization) with mini bar
       display.setColor(UIColor::primary_txt);
-      display.setCursor(0, 42);
+      display.setCursor(0, 37);
       display.print("CH free");
-      drawHealthBar(display, 42, 100 - radio_driver.getChannelUtilizationPct(), 50);
+      drawHealthBar(display, 37, 100 - radio_driver.getChannelUtilizationPct(), 50);
 
       // RX readiness % (100 - windowed deafness) with mini bar
-      display.setColor(UIColor::primary_txt);
-      display.setCursor(0, 53);
+      display.setCursor(0, 46);
       display.print("RX ready");
-      drawHealthBar(display, 53, 100 - radio_driver.getRxDeafnessPct(), 80);
+      drawHealthBar(display, 46, 100 - radio_driver.getRxDeafnessPct(), 80);
+
+      // RX quality % (100 - windowed RX error rate) with mini bar
+      display.setCursor(0, 55);
+      display.print("RXQ");
+      drawHealthBar(display, 55, 100 - radio_driver.getRxErrorRatePct(), 90);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - 32) / 2, 18,
