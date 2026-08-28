@@ -5,6 +5,10 @@
 #include <bluefruit.h>
 #include <nrf_soc.h>
 
+#ifdef USE_CC310_HW_CRYPTO
+#include <Adafruit_nRFCrypto.h>
+#endif
+
 static BLEDfu bledfu;
 
 static void connect_callback(uint16_t conn_handle) {
@@ -21,6 +25,11 @@ static void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
 
 void NRF52Board::begin() {
   startup_reason = BD_STARTUP_NORMAL;
+
+  #ifdef USE_CC310_HW_CRYPTO
+    // CC310 TRNG is higher quality and environment-independent vs radio RSSI noise.
+    nRFCrypto.begin();
+  #endif
 }
 
 #ifdef NRF52_POWER_MANAGEMENT
@@ -314,19 +323,47 @@ float NRF52Board::getMCUTemperature() {
 void NRF52Board::shutdownPeripherals() {
   // Power off the display if any
 #ifdef DISPLAY_CLASS
-  display.turnOff();
+  if (display.isOn()) {
+    display.turnOff();
+  }
 #endif
-
+  // Prep LoRa radio for power down
+  #ifdef P_LORA_RESET
+    digitalWrite(P_LORA_RESET, HIGH);  // preload OUT latch so pinMode can't glitch NRESET low
+    pinMode(P_LORA_RESET, OUTPUT);
+    digitalWrite(P_LORA_RESET, LOW);   // deliberate hardware reset (datasheet: >=100us)
+    delayMicroseconds(200);
+    digitalWrite(P_LORA_RESET, HIGH);
+  #endif
+  #if defined(P_LORA_SCLK) && defined(P_LORA_MISO) && defined(P_LORA_MOSI)
+    SPI.setPins(P_LORA_MISO, P_LORA_SCLK, P_LORA_MOSI);
+    SPI.begin(); // SPI may not be started on some shutdown paths, need it to shut down radio
+  #endif
+  #ifdef P_LORA_BUSY
+    pinMode(P_LORA_BUSY, INPUT);
+    uint32_t started_at = millis();
+    while (digitalRead(P_LORA_BUSY) && millis() - started_at < 10) {} //wait for radio to be ready
+  #endif
+  #ifdef P_LORA_NSS
+    pinMode(P_LORA_NSS, OUTPUT);
+    digitalWrite(P_LORA_NSS, HIGH);
+  #endif
   // Power off LoRa
   radio_driver.powerOff();
 
   // Keep LoRa inactive during deepsleep
-  digitalWrite(P_LORA_NSS, HIGH);
+  #ifdef P_LORA_NSS
+    digitalWrite(P_LORA_NSS, HIGH);
+  #endif
 
   // Power off GPS if any
   if(sensors.getLocationProvider() != NULL) {
     sensors.getLocationProvider()->stop();
   }
+
+#ifdef USE_CC310_HW_CRYPTO
+    nRFCrypto.end();
+#endif
 
   // Flush serial buffers
   Serial.flush();
@@ -372,7 +409,8 @@ bool NRF52Board::startOTAUpdate(const char *id, char reply[]) {
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.configPrphConn(92, BLE_GAP_EVENT_LENGTH_MIN, 16, 16);
 
-  Bluefruit.begin(1, 0);
+  if (!Bluefruit.begin(1, 0)) return false;
+
   // Set max power. Accepted values are: -40, -30, -20, -16, -12, -8, -4, 0, 4
   Bluefruit.setTxPower(4);
   // Set the BLE device name
