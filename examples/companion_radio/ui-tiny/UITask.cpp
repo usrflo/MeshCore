@@ -260,7 +260,17 @@ public:
       // channel-health bars (windowed, positive framing: full bar = good)
       drawHealthBar(display, 35, "CH free", 100 - radio_driver.getChannelUtilizationPct(), 50);
       drawHealthBar(display, 44, "RX ready", 100 - radio_driver.getRxDeafnessPct(), 80);
-      drawHealthBar(display, 53, "RX quality", 100 - radio_driver.getRxErrorRatePct(), 90);
+
+      // RX quality: good vs total decodes in the window ("good/total") - shows
+      // the corruption share AND how much traffic was heard (~5s window)
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(1);
+      display.setCursor(0, 53);
+      display.print("RX quality");
+      uint16_t rx_good = 0, rx_total = 0;
+      radio_driver.getRxQualityCounts(rx_good, rx_total);
+      sprintf(tmp, "%u/%u", rx_good, rx_total);
+      display.drawTextRightAlign(display.width(), 53, tmp);
 
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);

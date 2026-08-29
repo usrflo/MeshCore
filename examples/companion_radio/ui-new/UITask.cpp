@@ -350,10 +350,15 @@ public:
       display.print("RX ready");
       drawHealthBar(display, 46, 100 - radio_driver.getRxDeafnessPct(), 80);
 
-      // RX quality % (100 - windowed RX error rate) with mini bar
+      // RX quality: good vs total packet decodes in the window ("good/total") -
+      // shows the corruption share AND how much traffic was heard (~5s window)
+      display.setColor(UIColor::primary_txt);
       display.setCursor(0, 55);
       display.print("RX quality");
-      drawHealthBar(display, 55, 100 - radio_driver.getRxErrorRatePct(), 90);
+      uint16_t rx_good = 0, rx_total = 0;
+      radio_driver.getRxQualityCounts(rx_good, rx_total);
+      sprintf(tmp, "%u/%u", rx_good, rx_total);
+      display.drawTextRightAlign(display.width(), 55, tmp);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - 32) / 2, 18,

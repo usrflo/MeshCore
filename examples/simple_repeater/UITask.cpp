@@ -130,7 +130,17 @@ void UITask::renderCurrScreen() {
     // channel-health bars (windowed, positive framing: full bar = good)
     drawHealthBar(_display, 38, "CH free", 100 - radio_driver.getChannelUtilizationPct(), 50);
     drawHealthBar(_display, 47, "RX ready", 100 - radio_driver.getRxDeafnessPct(), 80);
-    drawHealthBar(_display, 56, "RX quality", 100 - radio_driver.getRxErrorRatePct(), 90);
+
+    // RX quality: good vs total decodes in the window ("good/total") - shows
+    // the corruption share AND how much traffic was heard (~5s window)
+    _display->setColor(UIColor::primary_txt);
+    _display->setTextSize(1);
+    _display->setCursor(0, 56);
+    _display->print("RX quality");
+    uint16_t rx_good = 0, rx_total = 0;
+    radio_driver.getRxQualityCounts(rx_good, rx_total);
+    sprintf(tmp, "%u/%u", rx_good, rx_total);
+    _display->drawTextRightAlign(_display->width(), 56, tmp);
   }
 }
 

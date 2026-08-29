@@ -75,15 +75,17 @@ public:
     for (int i = 0; i < 5; i++) { ev[i] = 0; bad[i] = 0; }
   }
 
+  // 'n_ev' counts ALL events (attempts), of which 'n_bad' failed.
   void add(uint32_t now, uint16_t n_ev, uint16_t n_bad) {
     advance(now);
     cur_ev += n_ev; cur_bad += n_bad;
   }
 
-  // Percent 0..100 of bad events; 0 when no events were seen (quiet = no verdict).
-  uint8_t badPct() const {
+  // Window totals: all events (attempts) and the failing subset.
+  void counts(uint16_t& n_ev, uint16_t& n_bad) const {
     uint32_t e = cur_ev, b = cur_bad;
     for (int i = 0; i < 5; i++) { e += ev[i]; b += bad[i]; }
-    return (e == 0) ? 0 : (uint8_t)((b * 100) / e);
+    n_ev = (e > 0xFFFF) ? 0xFFFF : (uint16_t)e;
+    n_bad = (b > 0xFFFF) ? 0xFFFF : (uint16_t)b;
   }
 };
