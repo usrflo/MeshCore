@@ -39,7 +39,7 @@ protected:
   virtual void doResetAGC();
 
 public:
-  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board), _preamble_sf(0) { n_recv = n_sent = 0; }
+  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board), _preamble_sf(0) { n_recv = n_sent = n_recv_errors = 0; }
 
   void begin() override;
   virtual void powerOff() { _radio->sleep(); }
@@ -71,7 +71,12 @@ public:
   int getNoiseFloor() const override { return _noise_floor; }
   uint8_t getChannelUtilizationPct() override { return _busy_win.pct(); }
   uint8_t getRxDeafnessPct() override { return _deaf_win.pct(); }
-  uint8_t getRxErrorRatePct() override { return _err_win.badPct(); }
+  void getRxQualityCounts(uint16_t& good, uint16_t& total) override {
+    uint16_t ev, bad;
+    _err_win.counts(ev, bad);
+    total = ev;      // all reception attempts
+    good = ev - bad; // ...of which decoded OK
+  }
   void triggerNoiseFloorCalibrate(int threshold) override;
   void setCADEnabled(bool enable) override { _cad_enabled = enable; }
   void resetAGC() override;

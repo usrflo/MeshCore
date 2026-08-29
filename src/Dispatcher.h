@@ -70,7 +70,9 @@ public:
    */
   virtual uint8_t getChannelUtilizationPct() { return 0; }  // % of time the channel was busy
   virtual uint8_t getRxDeafnessPct() { return 0; }          // % of time the radio was NOT in RX
-  virtual uint8_t getRxErrorRatePct() { return 0; }         // % of reception attempts with CRC errors
+  // Good vs total packet decodes in the RX-quality window (~5s): 'total' counts
+  // all reception attempts, 'good' the ones that decoded (passed CRC).
+  virtual void getRxQualityCounts(uint16_t& good, uint16_t& total) { good = 0; total = 0; }
 
   virtual void triggerNoiseFloorCalibrate(int threshold) { }
 

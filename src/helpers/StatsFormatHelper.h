@@ -24,9 +24,13 @@ public:
                               RadioDriverType& driver,
                               uint32_t total_air_time_ms,
                               uint32_t total_rx_air_time_ms) {
+    uint16_t rx_good = 0, rx_total = 0;
+    radio->getRxQualityCounts(rx_good, rx_total);
+    uint32_t rx_err_pct = (rx_total > 0)
+        ? ((uint32_t)(rx_total - rx_good) * 100) / rx_total : 0;
     sprintf(reply,
       "{\"noise_floor\":%d,\"last_rssi\":%d,\"last_snr\":%.2f,\"tx_air_secs\":%u,\"rx_air_secs\":%u,"
-      "\"chan_util_pct\":%u,\"rx_deaf_pct\":%u,\"rx_err_pct\":%u}",
+      "\"chan_util_pct\":%u,\"rx_deaf_pct\":%u,\"rx_err_pct\":%u,\"rx_good\":%u,\"rx_total\":%u}",
       (int16_t)radio->getNoiseFloor(),
       (int16_t)driver.getLastRSSI(),
       driver.getLastSNR(),
@@ -34,7 +38,9 @@ public:
       total_rx_air_time_ms / 1000,
       radio->getChannelUtilizationPct(),
       radio->getRxDeafnessPct(),
-      radio->getRxErrorRatePct()
+      rx_err_pct,
+      rx_good,
+      rx_total
     );
   }
 

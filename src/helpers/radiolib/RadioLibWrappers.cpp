@@ -124,8 +124,11 @@ void RadioLibWrapper::loop() {
   }
   _busy_win.add(now, _cur_busy ? dt : 0);
   _deaf_win.add(now, in_rx ? 0 : dt);
-  uint32_t r = n_recv, e = n_recv_errors;   // counter deltas -> RX error-rate window
-  _err_win.add(now, (uint16_t)(r - _last_recv_cnt), (uint16_t)(e - _last_err_cnt));
+  uint32_t r = n_recv, e = n_recv_errors;   // counter deltas -> RX-quality window
+  uint16_t d_ok = (uint16_t)(r - _last_recv_cnt), d_err = (uint16_t)(e - _last_err_cnt);
+  // events = ALL attempts (decodes + CRC failures), bad = the failures, so the
+  // ratio is errors-per-attempt rather than errors-per-good-decode
+  _err_win.add(now, d_ok + d_err, d_err);
   _last_recv_cnt = r; _last_err_cnt = e;
 
   // --- noise floor sampling ---
