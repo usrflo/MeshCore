@@ -57,21 +57,24 @@ public:
 class WindowedCountedRatio {
   uint16_t ev[5], bad[5];   // completed 1s buckets: event / bad-event counts
   uint16_t cur_ev, cur_bad; // current (partial) second
+  uint32_t cur_ms;          // ms accumulated toward the next bucket roll
   uint8_t  oldest;
   uint8_t  filled;
   uint32_t last_ms;
   void advance(uint32_t now) {                // roll completed seconds
     uint32_t dt = now - last_ms; last_ms = now;
-    while (dt >= 1000) {
+    if (dt > 60000) dt = 60000;               // long stall: the window has slid past anyway
+    cur_ms += dt;                             // accumulate: callers tick far faster than 1s,
+    while (cur_ms >= 1000) {                  // so no single dt ever reaches a second by itself
       ev[oldest] = cur_ev; bad[oldest] = cur_bad;
       oldest = (oldest + 1) % 5;
       if (filled < 5) filled++;
       cur_ev = 0; cur_bad = 0;                // long stall: window just slides past
-      dt -= 1000;
+      cur_ms -= 1000;
     }
   }
 public:
-  WindowedCountedRatio() : cur_ev(0), cur_bad(0), oldest(0), filled(0), last_ms(0) {
+  WindowedCountedRatio() : cur_ev(0), cur_bad(0), cur_ms(0), oldest(0), filled(0), last_ms(0) {
     for (int i = 0; i < 5; i++) { ev[i] = 0; bad[i] = 0; }
   }
 
