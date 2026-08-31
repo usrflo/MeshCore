@@ -50,32 +50,39 @@ public:
 };
 
 /**
- * \brief  Windowed ratio of "bad" discrete events over the last ~5 seconds
- *         (e.g. RX CRC failures). Same 5x1s bucket idea, but count-based,
- *         since events are discrete rather than time fractions.
+ * \brief  Windowed ratio of "bad" discrete events over the last ~10 minutes
+ *         (e.g. RX CRC failures). Same bucket-ring idea as WindowedPercent, but
+ *         count-based and much longer: packet counts on a quiet mesh need
+ *         minutes, not seconds, to become statistically meaningful. The
+ *         time-based utilization/deafness metrics stay at ~5 s.
  */
+template <uint8_t N_BUCKETS = 60, uint32_t BUCKET_MS = 10000>  // 60 x 10 s = ~10 min
 class WindowedCountedRatio {
-  uint16_t ev[5], bad[5];   // completed 1s buckets: event / bad-event counts
-  uint16_t cur_ev, cur_bad; // current (partial) second
-  uint32_t cur_ms;          // ms accumulated toward the next bucket roll
+  uint16_t ev[N_BUCKETS], bad[N_BUCKETS]; // completed buckets: event / bad-event counts
+  uint16_t cur_ev, cur_bad;               // current (partial) bucket
+  uint32_t cur_ms;                        // ms accumulated toward the next bucket roll
   uint8_t  oldest;
   uint8_t  filled;
   uint32_t last_ms;
-  void advance(uint32_t now) {                // roll completed seconds
+  void advance(uint32_t now) {                // roll completed buckets
     uint32_t dt = now - last_ms; last_ms = now;
-    if (dt > 60000) dt = 60000;               // long stall: the window has slid past anyway
-    cur_ms += dt;                             // accumulate: callers tick far faster than 1s,
-    while (cur_ms >= 1000) {                  // so no single dt ever reaches a second by itself
+    uint32_t window_ms = (uint32_t)N_BUCKETS * BUCKET_MS;
+    if (dt > window_ms) dt = window_ms;       // long stall/sleep: the window has slid past anyway
+    cur_ms += dt;                             // accumulate: callers tick far faster than one bucket,
+    // A stall spanning the whole window makes everything pre-stall older than
+    // the window: drop it instead of baking it into the oldest (surviving) bucket.
+    if (cur_ms / BUCKET_MS >= N_BUCKETS) { cur_ev = 0; cur_bad = 0; }
+    while (cur_ms >= BUCKET_MS) {             // so no single dt ever fills a bucket by itself
       ev[oldest] = cur_ev; bad[oldest] = cur_bad;
-      oldest = (oldest + 1) % 5;
-      if (filled < 5) filled++;
+      oldest = (oldest + 1) % N_BUCKETS;
+      if (filled < N_BUCKETS) filled++;
       cur_ev = 0; cur_bad = 0;                // long stall: window just slides past
-      cur_ms -= 1000;
+      cur_ms -= BUCKET_MS;
     }
   }
 public:
   WindowedCountedRatio() : cur_ev(0), cur_bad(0), cur_ms(0), oldest(0), filled(0), last_ms(0) {
-    for (int i = 0; i < 5; i++) { ev[i] = 0; bad[i] = 0; }
+    for (int i = 0; i < N_BUCKETS; i++) { ev[i] = 0; bad[i] = 0; }
   }
 
   // 'n_ev' counts ALL events (attempts), of which 'n_bad' failed.
@@ -84,10 +91,29 @@ public:
     cur_ev += n_ev; cur_bad += n_bad;
   }
 
-  // Window totals: all events (attempts) and the failing subset.
+  // Forget everything (stats reset). last_ms is left alone: loop()-rate
+  // callers pass dt of only a few ms, so post-clear observation restarts at ~0
+  // and the warm-up extrapolation below applies again.
+  void clear() {
+    for (int i = 0; i < N_BUCKETS; i++) { ev[i] = 0; bad[i] = 0; }
+    cur_ev = 0; cur_bad = 0; cur_ms = 0; oldest = 0; filled = 0;
+  }
+
+  // Window totals: all events (attempts) and the failing subset. While the
+  // window is still FILLING (the first window-length after construction or
+  // clear()) the counts are extrapolated to the full window: events per
+  // observed time x window length. Rough at first (an early burst
+  // overshoots), but the number has full-window scale immediately and
+  // converges as the window fills.
   void counts(uint16_t& n_ev, uint16_t& n_bad) const {
     uint32_t e = cur_ev, b = cur_bad;
-    for (int i = 0; i < 5; i++) { e += ev[i]; b += bad[i]; }
+    for (int i = 0; i < N_BUCKETS; i++) { e += ev[i]; b += bad[i]; }
+    uint32_t window_ms = (uint32_t)N_BUCKETS * BUCKET_MS;
+    uint32_t observed = (uint32_t)filled * BUCKET_MS + cur_ms;
+    if (observed >= BUCKET_MS && observed < window_ms) {  // warm-up: scale up
+      e = (uint32_t)(((uint64_t)e * window_ms) / observed);
+      b = (uint32_t)(((uint64_t)b * window_ms) / observed);
+    }
     n_ev = (e > 0xFFFF) ? 0xFFFF : (uint16_t)e;
     n_bad = (b > 0xFFFF) ? 0xFFFF : (uint16_t)b;
   }

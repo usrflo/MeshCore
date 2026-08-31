@@ -132,7 +132,8 @@ void UITask::renderCurrScreen() {
     drawHealthBar(_display, 47, "RX ready", 100 - radio_driver.getRxDeafnessPct(), 80);
 
     // RX quality: good vs total decodes in the window ("good/total") - shows
-    // the corruption share AND how much traffic was heard (~5s window)
+    // the corruption share AND how much traffic was heard (~10 min window,
+    // extrapolated while the window fills after boot/reset)
     _display->setColor(UIColor::primary_txt);
     _display->setTextSize(1);
     _display->setCursor(0, 56);

@@ -26,7 +26,7 @@ protected:
   // windowed channel-health metrics (sampled in loop())
   WindowedPercent _busy_win;      // channel busy: own TX, mid-receive, or energy above floor + margin
   WindowedPercent _deaf_win;      // radio not in RX (listening) mode
-  WindowedCountedRatio _err_win;  // RX attempts with CRC errors
+  WindowedCountedRatio<60, 10000> _err_win;  // RX attempts with CRC errors (~10 min window)
   uint32_t _last_metric_ms;       // stamp of previous loop() metric sample
   uint32_t _last_rssi_ms;         // rate limit for the RSSI busy poll
   uint32_t _last_recv_cnt, _last_err_cnt;  // previous packet counters (for deltas)
@@ -86,7 +86,14 @@ public:
   uint32_t getPacketsRecv() const { return n_recv; }
   uint32_t getPacketsRecvErrors() const { return n_recv_errors; }
   uint32_t getPacketsSent() const { return n_sent; }
-  void resetStats() { n_recv = n_sent = n_recv_errors = 0; }
+  // Zeroing the counters without re-stamping the delta bases would underflow
+  // the next loop() delta and inject a garbage spike into one ~10 min window
+  // bucket, so clear the window and stamps together with the counters.
+  void resetStats() {
+    n_recv = n_sent = n_recv_errors = 0;
+    _last_recv_cnt = 0; _last_err_cnt = 0;
+    _err_win.clear();
+  }
 
   virtual float getLastRSSI() const override;
   virtual float getLastSNR() const override;

@@ -64,14 +64,17 @@ public:
   virtual int getNoiseFloor() const { return 0; }
 
   /**
-   * \brief  windowed channel-health metrics over the last ~5 observed seconds.
-   *         All three use "0 = good" semantics; default 0 so radios that do
-   *         not implement them (e.g. ESPNOW) degrade gracefully.
+   * \brief  windowed channel-health metrics: utilization/deafness over the
+   *         last ~5 observed seconds, RX-quality counts over the last ~10
+   *         minutes (extrapolated to the full window while it fills after a
+   *         boot/reset). All use "0 = good" semantics; default 0 so radios
+   *         that do not implement them (e.g. ESPNOW) degrade gracefully.
    */
   virtual uint8_t getChannelUtilizationPct() { return 0; }  // % of time the channel was busy
   virtual uint8_t getRxDeafnessPct() { return 0; }          // % of time the radio was NOT in RX
-  // Good vs total packet decodes in the RX-quality window (~5s): 'total' counts
-  // all reception attempts, 'good' the ones that decoded (passed CRC).
+  // Good vs total packet decodes in the RX-quality window (~10 min,
+  // extrapolated to the full window while it fills after a boot/reset):
+  // 'total' counts all reception attempts, 'good' the ones that decoded.
   virtual void getRxQualityCounts(uint16_t& good, uint16_t& total) { good = 0; total = 0; }
 
   virtual void triggerNoiseFloorCalibrate(int threshold) { }
