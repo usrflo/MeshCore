@@ -24,9 +24,9 @@ public:
                               RadioDriverType& driver,
                               uint32_t total_air_time_ms,
                               uint32_t total_rx_air_time_ms) {
-    // rx_good/rx_total: decodes vs all reception attempts over the ~10 min
-    // RX-quality window, extrapolated to the full window while it fills after
-    // a boot/reset.
+    // rx_good/rx_total: decodes vs (decodes + SNR-relevant CRC failures) over
+    // the ~10 min RX-quality window, extrapolated to the full window while it
+    // fills after a boot/reset. Weak distant-station failures are excluded.
     uint16_t rx_good = 0, rx_total = 0;
     radio->getRxQualityCounts(rx_good, rx_total);
     uint32_t rx_err_pct = (rx_total > 0)

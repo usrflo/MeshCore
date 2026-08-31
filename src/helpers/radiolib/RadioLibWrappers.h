@@ -17,6 +17,7 @@ protected:
   PhysicalLayer* _radio;
   mesh::MainBoard* _board;
   uint32_t n_recv, n_sent, n_recv_errors;
+  uint32_t n_recv_errors_strong;   // failures whose SNR says they should have decoded (RX-quality window)
   int16_t _noise_floor, _threshold;
   bool _cad_enabled;
   uint16_t _num_floor_samples;
@@ -26,10 +27,11 @@ protected:
   // windowed channel-health metrics (sampled in loop())
   WindowedPercent _busy_win;      // channel busy: own TX, mid-receive, or energy above floor + margin
   WindowedPercent _deaf_win;      // radio not in RX (listening) mode
-  WindowedCountedRatio<60, 10000> _err_win;  // RX attempts with CRC errors (~10 min window)
+  WindowedCountedRatio<60, 10000> _err_win;  // RX attempts with relevant CRC errors (~10 min window)
   uint32_t _last_metric_ms;       // stamp of previous loop() metric sample
   uint32_t _last_rssi_ms;         // rate limit for the RSSI busy poll
   uint32_t _last_recv_cnt, _last_err_cnt;  // previous packet counters (for deltas)
+  uint32_t _last_strong_err_cnt = 0;       // previous SNR-relevant failure counter (for deltas)
   bool _cur_busy;                 // last busy verdict (held between RSSI polls)
 
   void idle();
@@ -39,7 +41,7 @@ protected:
   virtual void doResetAGC();
 
 public:
-  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board), _preamble_sf(0) { n_recv = n_sent = n_recv_errors = 0; }
+  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board), _preamble_sf(0) { n_recv = n_sent = n_recv_errors = n_recv_errors_strong = 0; }
 
   void begin() override;
   virtual void powerOff() { _radio->sleep(); }
@@ -90,8 +92,8 @@ public:
   // the next loop() delta and inject a garbage spike into one ~10 min window
   // bucket, so clear the window and stamps together with the counters.
   void resetStats() {
-    n_recv = n_sent = n_recv_errors = 0;
-    _last_recv_cnt = 0; _last_err_cnt = 0;
+    n_recv = n_sent = n_recv_errors = n_recv_errors_strong = 0;
+    _last_recv_cnt = 0; _last_err_cnt = 0; _last_strong_err_cnt = 0;
     _err_win.clear();
   }
 

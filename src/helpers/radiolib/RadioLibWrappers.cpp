@@ -124,12 +124,12 @@ void RadioLibWrapper::loop() {
   }
   _busy_win.add(now, _cur_busy ? dt : 0);
   _deaf_win.add(now, in_rx ? 0 : dt);
-  uint32_t r = n_recv, e = n_recv_errors;   // counter deltas -> RX-quality window
-  uint16_t d_ok = (uint16_t)(r - _last_recv_cnt), d_err = (uint16_t)(e - _last_err_cnt);
-  // events = ALL attempts (decodes + CRC failures), bad = the failures, so the
-  // ratio is errors-per-attempt rather than errors-per-good-decode
+  uint32_t r = n_recv, es = n_recv_errors_strong;   // counter deltas -> RX-quality window
+  uint16_t d_ok = (uint16_t)(r - _last_recv_cnt), d_err = (uint16_t)(es - _last_strong_err_cnt);
+  // events = decodes + SNR-relevant CRC failures (weak distant stations are
+  // excluded in recvRaw, from both numerator and denominator), bad = those failures
   _err_win.add(now, d_ok + d_err, d_err);
-  _last_recv_cnt = r; _last_err_cnt = e;
+  _last_recv_cnt = r; _last_strong_err_cnt = es;
 
   // --- noise floor sampling ---
   if (state == STATE_RX && _num_floor_samples < NUM_NOISE_FLOOR_SAMPLES) {
@@ -169,6 +169,22 @@ bool RadioLibWrapper::isInRecvMode() const {
   return (state & ~STATE_INT_READY) == STATE_RX;
 }
 
+// Approximate SNR threshold per SF for successful reception (based on Semtech datasheets)
+static float snr_threshold[] = {
+    -7.5,  // SF7 needs at least -7.5 dB SNR
+    -10,   // SF8 needs at least -10 dB SNR
+    -12.5, // SF9 needs at least -12.5 dB SNR
+    -15,  // SF10 needs at least -15 dB SNR
+    -17.5,// SF11 needs at least -17.5 dB SNR
+    -20   // SF12 needs at least -20 dB SNR
+};
+
+// A CRC-failed packet counts as an RX-quality failure only if its SNR was this
+// far above the per-SF decode threshold: "should have decoded, but didn't" =
+// collision/interference verdict on this channel. Distant stations below the
+// decode threshold are physics, not channel health.
+#define RXQ_FAIL_SNR_GUARD_DB 3.0f
+
 int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
   int len = 0;
   if (state & STATE_INT_READY) {
@@ -180,6 +196,23 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
         MESH_DEBUG_PRINTLN("RadioLibWrapper: error: readData(%d)", err);
         len = 0;
         n_recv_errors++;
+        // Only "relevant" failures enter the RX-quality window: a packet whose
+        // SNR says it SHOULD have decoded (>= per-SF threshold + guard) but
+        // failed CRC indicates a collision/interference on THIS channel, while
+        // a distant station below the decode threshold is expected to fail.
+        // The packet-status SNR stays latched after the failed read (readData
+        // clears IRQ/FIFO state, not packet status). Weak failures drop out of
+        // both numerator and denominator of the window.
+        if (err == RADIOLIB_ERR_CRC_MISMATCH || err == RADIOLIB_ERR_LORA_HEADER_DAMAGED) {
+          uint8_t sf = getSpreadingFactor();
+          if (sf < 7) sf = 7; else if (sf > 12) sf = 12;
+          float snr = getLastSNR();
+          bool relevant = (snr >= snr_threshold[sf - 7] + RXQ_FAIL_SNR_GUARD_DB);
+          if (relevant) n_recv_errors_strong++;
+          #ifdef MESH_DEBUG_RXQ
+          MESH_DEBUG_PRINTLN("RXQ fail: snr=%.1f sf=%u -> %s", (double)snr, sf, relevant ? "counted" : "excluded(weak)");
+          #endif
+        }
       } else {
       //  Serial.print("  readData() -> "); Serial.println(len);
         n_recv++;
@@ -263,16 +296,6 @@ float RadioLibWrapper::getLastRSSI() const {
 float RadioLibWrapper::getLastSNR() const {
   return _radio->getSNR();
 }
-
-// Approximate SNR threshold per SF for successful reception (based on Semtech datasheets)
-static float snr_threshold[] = {
-    -7.5,  // SF7 needs at least -7.5 dB SNR
-    -10,   // SF8 needs at least -10 dB SNR
-    -12.5, // SF9 needs at least -12.5 dB SNR
-    -15,  // SF10 needs at least -15 dB SNR
-    -17.5,// SF11 needs at least -17.5 dB SNR
-    -20   // SF12 needs at least -20 dB SNR
-};
 
 float RadioLibWrapper::packetScoreInt(float snr, int sf, int packet_len) {
   if (sf < 7) return 0.0f;
