@@ -261,16 +261,28 @@ public:
       drawHealthBar(display, 35, "CH free", 100 - radio_driver.getChannelUtilizationPct(), 50);
       drawHealthBar(display, 44, "RX ready", 100 - radio_driver.getRxDeafnessPct(), 80);
 
-      // RX quality: good vs total decodes in the window ("good/total") - shows
-      // the corruption share AND how much traffic was heard (~10 min window,
-      // extrapolated while the window fills after boot/reset)
+      // RX quality: windowed good vs total decodes as "NN%=good/total" (~10 min
+      // window, extrapolated while it fills after boot/reset) - the percentage
+      // scans like the bars above, the counts show the sample size and traffic
+      // level behind it
       display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
       display.setCursor(0, 53);
       display.print("RX quality");
       uint16_t rx_good = 0, rx_total = 0;
       radio_driver.getRxQualityCounts(rx_good, rx_total);
-      sprintf(tmp, "%u/%u", rx_good, rx_total);
+      if (rx_total > 0) {
+        uint8_t rxq_pct = (uint8_t)((rx_good * 100u) / rx_total);
+        sprintf(tmp, "%u%%=%u/%u", rxq_pct, rx_good, rx_total);
+        // very large counts on a narrow display: drop the percentage, keep the counts
+        if (display.getTextWidth(tmp) + display.getTextWidth("RX quality") + 4 > display.width()) {
+          sprintf(tmp, "%u/%u", rx_good, rx_total);
+        }
+        display.setColor(rxq_pct < 80 ? UIColor::warning_txt : UIColor::primary_txt);
+      } else {
+        sprintf(tmp, "%u/%u", rx_good, rx_total);   // quiet: no data, no verdict
+        display.setColor(UIColor::primary_txt);
+      }
       display.drawTextRightAlign(display.width(), 53, tmp);
 
     } else if (_page == HomePage::BLUETOOTH) {
