@@ -351,7 +351,8 @@ public:
       drawHealthBar(display, 46, 100 - radio_driver.getRxDeafnessPct(), 80);
 
       // RX quality: good vs total packet decodes in the window ("good/total") -
-      // shows the corruption share AND how much traffic was heard (~5s window)
+      // shows the corruption share AND how much traffic was heard (~10 min
+      // window, extrapolated while the window fills after boot/reset)
       display.setColor(UIColor::primary_txt);
       display.setCursor(0, 55);
       display.print("RX quality");
