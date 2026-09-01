@@ -154,19 +154,25 @@ public:
   // then the "NN%" value right-aligned before a bar pinned to the display's
   // right edge, so value and bar stay put while the value's width changes.
   // Positive framing: a full bar is good; it turns warning-coloured below
-  // 'warn_below'.
-  void drawHealthBar(DisplayDriver& display, int y, const char* label, uint8_t pct, uint8_t warn_below) {
+  // 'warn_below'. 'no_data' renders "--%" with an empty, dimmed bar - nothing
+  // measured yet, so no verdict.
+  void drawHealthBar(DisplayDriver& display, int y, const char* label, uint8_t pct, uint8_t warn_below,
+                     bool no_data = false) {
     display.setColor(UIColor::primary_txt);
     display.setTextSize(1);
     display.setCursor(0, y);
     display.print(label);
     const int bar_w = 36;
     int bar_x = display.width() - bar_w - 1;
-    display.setColor(pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt);
+    display.setColor(no_data ? UIColor::secondary_txt : (pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt));
     display.drawRect(bar_x, y + 1, bar_w, 7);
-    display.fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
+    if (!no_data) display.fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
     char val[8];
-    sprintf(val, "%u%%", pct);
+    if (no_data) {
+      strcpy(val, "--%");
+    } else {
+      sprintf(val, "%u%%", pct);
+    }
     display.drawTextRightAlign(bar_x - 3, y, val);
   }
 
@@ -261,29 +267,13 @@ public:
       drawHealthBar(display, 35, "CH free", 100 - radio_driver.getChannelUtilizationPct(), 50);
       drawHealthBar(display, 44, "RX ready", 100 - radio_driver.getRxDeafnessPct(), 80);
 
-      // RX quality: windowed good vs total decodes as "NN%=good/total" (~10 min
-      // window, extrapolated while it fills after boot/reset) - the percentage
-      // scans like the bars above, the counts show the sample size and traffic
-      // level behind it
-      display.setColor(UIColor::primary_txt);
-      display.setTextSize(1);
-      display.setCursor(0, 53);
-      display.print("RX quality");
+      // RX quality: windowed good vs total packet decodes (~10 min window,
+      // extrapolated while it fills after boot/reset) as a uniform bar row like
+      // the two above; the underlying counts stay available via stats-radio
       uint16_t rx_good = 0, rx_total = 0;
       radio_driver.getRxQualityCounts(rx_good, rx_total);
-      if (rx_total > 0) {
-        uint8_t rxq_pct = (uint8_t)((rx_good * 100u) / rx_total);
-        sprintf(tmp, "%u%%=%u/%u", rxq_pct, rx_good, rx_total);
-        // very large counts on a narrow display: drop the percentage, keep the counts
-        if (display.getTextWidth(tmp) + display.getTextWidth("RX quality") + 4 > display.width()) {
-          sprintf(tmp, "%u/%u", rx_good, rx_total);
-        }
-        display.setColor(rxq_pct < 80 ? UIColor::warning_txt : UIColor::primary_txt);
-      } else {
-        sprintf(tmp, "%u/%u", rx_good, rx_total);   // quiet: no data, no verdict
-        display.setColor(UIColor::primary_txt);
-      }
-      display.drawTextRightAlign(display.width(), 53, tmp);
+      uint8_t rxq_pct = (rx_total > 0) ? (uint8_t)((rx_good * 100u) / rx_total) : 0;
+      drawHealthBar(display, 53, "RX quality", rxq_pct, 80, rx_total == 0);
 
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
