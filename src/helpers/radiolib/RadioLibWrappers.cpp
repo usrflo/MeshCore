@@ -22,7 +22,27 @@
 // Rate limit for the busy-verdict RSSI poll (one SPI transaction each).
 #define CHAN_BUSY_RSSI_INTERVAL_MS 50
 
+// RX-quality jam verdict: ambient-jam share of the last ~5 s that counts as
+// "currently jammed"...
+#define RXQ_JAM_MIN_PCT  80
+// ...combined with no decodable attempt for this long. A jammed channel produces
+// zero header-valid IRQs, i.e. ZERO RX-quality events, so the pure event ratio
+// would freeze at its last (healthy) value for the whole 10 min window - the row
+// would read 100% exactly while nothing can be received.
+#define RXQ_JAM_STALE_MS  120000
+
 static volatile uint8_t state = STATE_IDLE;
+
+// In-place insertion sort of int16_t samples for the quiet-floor percentile. Runs
+// once per calibration block (64 elements), so O(n^2) is irrelevant here.
+static void sortInt16(int16_t* a, int n) {
+  for (int i = 1; i < n; i++) {
+    int16_t v = a[i];
+    int j = i - 1;
+    while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; }
+    a[j + 1] = v;
+  }
+}
 
 // this function is called when a complete packet
 // is transmitted by the module
@@ -52,6 +72,10 @@ void RadioLibWrapper::begin() {
   // start average out some samples
   _num_floor_samples = 0;
   _floor_sample_sum = 0;
+  _quiet_floor_cnt = 0;
+  _quiet_floor_idx = 0;
+  _quiet_floor = 0;   // busyRefFloor() falls back to _noise_floor (capped) until the ring fills
+  _cur_jam = false;
 }
 
 uint32_t RadioLibWrapper::getRngSeed() {
@@ -102,6 +126,27 @@ void RadioLibWrapper::resetAGC() {
   _last_recv_cnt = n_recv;
   _last_strong_err_cnt = n_recv_errors_strong;
   _cur_busy = false;
+  _cur_jam = false;   // (the quiet-floor ring stays: published history is not invalidated by an AFE reset)
+}
+
+int16_t RadioLibWrapper::busyRefFloor() {
+  int16_t ref = (_quiet_floor_cnt >= QUIET_FLOOR_MIN_BLOCKS) ? _quiet_floor : _noise_floor;
+  if (ref > CHAN_BUSY_REF_MAX_DB) ref = CHAN_BUSY_REF_MAX_DB;
+  return ref;
+}
+
+bool RadioLibWrapper::getRxQualityPct(uint8_t& pct) {
+  uint16_t ev, bad;
+  _err_win.counts(ev, bad);
+  if (ev == 0) { pct = 0; return false; }  // nothing observed yet: no verdict
+  // Sustained interference with no decode attempt at all is a reception failure,
+  // not "no traffic": report 0% instead of a ratio frozen at its last healthy value.
+  if (_jam_win.pct() >= RXQ_JAM_MIN_PCT && millis() - _last_rxq_ev_ms >= RXQ_JAM_STALE_MS) {
+    pct = 0;
+    return true;
+  }
+  pct = (uint8_t)(((ev - bad) * 100u) / ev);
+  return true;
 }
 
 void RadioLibWrapper::loop() {
@@ -125,6 +170,7 @@ void RadioLibWrapper::loop() {
   bool tx = ((state & ~STATE_INT_READY) == STATE_TX_WAIT);
   if (tx) {
     _cur_busy = true;
+    _cur_jam = false;   // our own transmission is not ambient interference
   } else if (in_rx && now - _last_rssi_ms >= CHAN_BUSY_RSSI_INTERVAL_MS) {
     _last_rssi_ms = now;
     // Never call isReceivingPacket() while a completed packet is unread
@@ -133,17 +179,28 @@ void RadioLibWrapper::loop() {
     // would count a header-damaged packet as a good decode. The RSSI poll
     // still marks the channel busy while that packet drains.
     bool mid_rx = ((state & STATE_INT_READY) == 0) && isReceivingPacket();
-    _cur_busy = mid_rx || (getCurrentRSSI() > _noise_floor + CHAN_BUSY_MARGIN);
+    int16_t rssi = (int16_t)getCurrentRSSI();
+    int16_t ref = busyRefFloor();
+    _cur_busy = mid_rx || (rssi > ref + CHAN_BUSY_MARGIN);
+    // Ambient jam: the same energy test, but strictly against the QUIET reference and
+    // never while locked onto a preamble (that is a packet, not interference). This is
+    // the Dauerstoerer detector: the adapted _noise_floor follows a sustained
+    // interferer up to its level, so busy measured against _noise_floor would call the
+    // channel "free" exactly while nothing can be decoded.
+    _cur_jam = !mid_rx && (rssi > ref + CHAN_BUSY_MARGIN);
   } else if (!in_rx) {
     _cur_busy = false;   // out of RX without TX: nothing measurable, never hold a stale verdict
+    _cur_jam = false;
   }
   _busy_win.add(now, _cur_busy ? dt : 0);
   _deaf_win.add(now, in_rx ? 0 : dt);
+  _jam_win.add(now, _cur_jam ? dt : 0);
   uint32_t r = n_recv, es = n_recv_errors_strong;   // counter deltas -> RX-quality window
   uint16_t d_ok = (uint16_t)(r - _last_recv_cnt), d_err = (uint16_t)(es - _last_strong_err_cnt);
   // events = decodes + SNR-relevant CRC failures (weak distant stations are
   // excluded in recvRaw, from both numerator and denominator), bad = those failures
   _err_win.add(now, d_ok + d_err, d_err);
+  if (d_ok + d_err > 0) _last_rxq_ev_ms = now;
   _last_recv_cnt = r; _last_strong_err_cnt = es;
 
   // --- noise floor sampling ---
@@ -161,6 +218,24 @@ void RadioLibWrapper::loop() {
       _noise_floor = -120;    // clamp to lower bound of -120dBi
     }
     _floor_sample_sum = 0;
+
+    // Quiet-floor ring: retain the published values and keep their 10th percentile as
+    // the busy-verdict reference. The adapted floor can drift (ratchet) or follow a
+    // sustained interferer (other estimator lineages); the quietest decile of the last
+    // several minutes stays near the real ambient, and CHAN_BUSY_REF_MAX_DB bounds even
+    // a jam that outlives the ring. Recovers on its own once quiet blocks return.
+    _quiet_floor_ring[_quiet_floor_idx] = _noise_floor;
+    _quiet_floor_idx = (_quiet_floor_idx + 1) % QUIET_FLOOR_BLOCKS;
+    if (_quiet_floor_cnt < QUIET_FLOOR_BLOCKS) _quiet_floor_cnt++;
+    {
+      int16_t sorted[QUIET_FLOOR_BLOCKS];
+      for (uint8_t i = 0; i < _quiet_floor_cnt; i++) sorted[i] = _quiet_floor_ring[i];
+      sortInt16(sorted, _quiet_floor_cnt);
+      _quiet_floor = sorted[_quiet_floor_cnt / 10];
+      #ifdef MESH_DEBUG_NOISE_FLOOR
+      MESH_DEBUG_PRINTLN("RadioLibWrapper: quiet_floor = %d (P10 of %u blocks)", (int)_quiet_floor, _quiet_floor_cnt);
+      #endif
+    }
 
     #ifdef MESH_DEBUG_NOISE_FLOOR
     MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d", (int)_noise_floor);
