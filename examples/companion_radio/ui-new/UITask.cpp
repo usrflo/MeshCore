@@ -335,9 +335,13 @@ public:
 
       // RX quality: windowed good vs total packet decodes (~10 min window) as
       // a uniform bar row like the two above; the underlying counts stay
-      // available via stats-radio
+      // available via stats-radio. The fetch is sequenced separately from the
+      // draw call: passing rxq_pct by value AND by reference (getRxQualityPct)
+      // in one argument list is unsequenced read+write (undefined behavior) -
+      // the bar could receive the pre-call 0 instead of the measured value.
       uint8_t rxq_pct = 0;
-      display.drawHealthBar(55, "RX quality", rxq_pct, 80, !radio_driver.getRxQualityPct(rxq_pct));
+      bool has_rxq = radio_driver.getRxQualityPct(rxq_pct);
+      display.drawHealthBar(55, "RX quality", rxq_pct, 80, !has_rxq);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - 32) / 2, 18,
