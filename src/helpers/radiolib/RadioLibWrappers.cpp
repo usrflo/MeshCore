@@ -73,7 +73,7 @@ void RadioLibWrapper::begin() {
   // (the member stamps have no initializers, so this must run before loop())
   _last_metric_ms = _last_rssi_ms = millis();
   _last_recv_cnt = n_recv;
-  _last_err_cnt = n_recv_errors;
+  // _last_err_cnt = n_recv_errors;
   _cur_busy = false;
 }
 
