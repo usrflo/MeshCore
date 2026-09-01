@@ -100,27 +100,42 @@ void RadioLibWrapper::resetAGC() {
   // channel-health metrics: stamp now so the first window has no phantom sample
   _last_metric_ms = _last_rssi_ms = millis();
   _last_recv_cnt = n_recv;
-  _last_err_cnt = n_recv_errors;
+  _last_strong_err_cnt = n_recv_errors_strong;
   _cur_busy = false;
 }
 
 void RadioLibWrapper::loop() {
   // --- windowed channel-health metrics (time-weighted, loop-rate independent) ---
   // Busy covers what the radio cannot afford to miss: our own TX airtime (the
-  // receiver cannot measure while transmitting) and an in-progress reception;
-  // otherwise the verdict is the rate-limited RSSI poll above floor + margin.
-  // Deaf-but-not-TX windows (FIFO readout, TX turnaround, CAD scan, AGC warm
-  // sleep; each us..few ms) count as not-busy but stay in the denominator:
-  // a small, deliberate underestimate of utilization.
+  // receiver cannot measure while transmitting), an in-progress reception, or
+  // energy above floor + margin. The RX-based verdicts are sampled on the
+  // CHAN_BUSY_RSSI_INTERVAL_MS tick, NOT on every loop() call (the main loop
+  // spins at kHz on ESP32): 2 SPI transactions per tick instead of thousands
+  // per second. This is a pure observation margin and deliberately independent
+  // of the send gate's operator-configured verdict in isChannelActive()
+  // (int.thresh / CAD): the display should not change just because the
+  // operator retunes when the node is allowed to send.
+  // Deaf-but-not-TX windows (FIFO readout, TX turnaround; each us..few ms)
+  // count as not-busy but stay in the denominator: a small, deliberate
+  // underestimate of utilization. (CAD dwells are attributed by
+  // isChannelActive() itself, where they block.)
   uint32_t now = millis();
   uint32_t dt = now - _last_metric_ms; _last_metric_ms = now;
   bool in_rx = isInRecvMode();
   bool tx = ((state & ~STATE_INT_READY) == STATE_TX_WAIT);
-  if (tx || (in_rx && isReceivingPacket())) {
+  if (tx) {
     _cur_busy = true;
   } else if (in_rx && now - _last_rssi_ms >= CHAN_BUSY_RSSI_INTERVAL_MS) {
     _last_rssi_ms = now;
-    _cur_busy = (getCurrentRSSI() > _noise_floor + CHAN_BUSY_MARGIN);
+    // Never call isReceivingPacket() while a completed packet is unread
+    // (STATE_INT_READY): on SX126x its header-error branch clears HEADER_ERR,
+    // which readData() needs to classify the packet - clearing it beforehand
+    // would count a header-damaged packet as a good decode. The RSSI poll
+    // still marks the channel busy while that packet drains.
+    bool mid_rx = ((state & STATE_INT_READY) == 0) && isReceivingPacket();
+    _cur_busy = mid_rx || (getCurrentRSSI() > _noise_floor + CHAN_BUSY_MARGIN);
+  } else if (!in_rx) {
+    _cur_busy = false;   // out of RX without TX: nothing measurable, never hold a stale verdict
   }
   _busy_win.add(now, _cur_busy ? dt : 0);
   _deaf_win.add(now, in_rx ? 0 : dt);
@@ -201,9 +216,13 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
         // failed CRC indicates a collision/interference on THIS channel, while
         // a distant station below the decode threshold is expected to fail.
         // The packet-status SNR stays latched after the failed read (readData
-        // clears IRQ/FIFO state, not packet status). Weak failures drop out of
-        // both numerator and denominator of the window.
-        if (err == RADIOLIB_ERR_CRC_MISMATCH || err == RADIOLIB_ERR_LORA_HEADER_DAMAGED) {
+        // clears IRQ/FIFO state, not packet status) - but it is only
+        // trustworthy once ANY packet has latched a status: before that it
+        // reads the 0 dB reset value, which passes every threshold + guard.
+        // Header-damaged receptions may still read the previous packet's
+        // latch (the modem aborted before the payload): best effort.
+        // Weak failures drop out of both numerator and denominator.
+        if (_rx_snr_latched && (err == RADIOLIB_ERR_CRC_MISMATCH || err == RADIOLIB_ERR_LORA_HEADER_DAMAGED)) {
           uint8_t sf = getSpreadingFactor();
           if (sf < 7) sf = 7; else if (sf > 12) sf = 12;
           float snr = getLastSNR();
@@ -216,6 +235,7 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
       } else {
       //  Serial.print("  readData() -> "); Serial.println(len);
         n_recv++;
+        _rx_snr_latched = true;  // a packet status is now latched -> SNR verdicts are meaningful
       }
     }
     #if defined(USE_LR2021)
@@ -278,7 +298,14 @@ bool RadioLibWrapper::isChannelActive() {
 
   // cad: hardware channel activity detection
   if (_cad_enabled) {
+    // The CAD runs in standby (radio NOT listening) and blocks this thread for
+    // ms: attribute the dwell to the deafness window here, where it happens -
+    // once loop() next runs the radio is back in RX and the dwell would
+    // otherwise vanish from both metrics.
+    uint32_t cad_start = millis();
     int16_t result = performChannelScan();
+    uint32_t cad_end = millis();
+    _deaf_win.add(cad_end, cad_end - cad_start);
     // scanChannel() triggers DIO interrupt (CAD done) which sets STATE_INT_READY
     // via setFlag() ISR. Clear it before restarting RX so recvRaw() doesn't
     // try to read a non-existent packet and count a spurious recv error.

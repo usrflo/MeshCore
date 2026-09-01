@@ -170,26 +170,7 @@ class HomeScreen : public UIScreen {
 #endif
   }
 
-  // Channel-health mini bar (battery-indicator pattern): the bar is pinned to
-  // the display's right edge with the "NN%" value right-aligned just before
-  // it, so both stay put while the value's width changes. Positive framing:
-  // a full bar is good; it turns warning-coloured below 'warn_below'.
-  // 'no_data' renders "--%" with an empty, dimmed bar - nothing measured
-  // yet, so no verdict.
-  void drawHealthBar(DisplayDriver& display, int y, uint8_t pct, uint8_t warn_below, bool no_data = false) {
-    display.setColor(no_data ? UIColor::secondary_txt : (pct < warn_below ? UIColor::warning_txt : UIColor::primary_txt));
-    const int bar_w = 24;
-    int bar_x = display.width() - bar_w - 1;
-    display.drawRect(bar_x, y + 1, bar_w, 7);
-    if (!no_data) display.fillRect(bar_x + 1, y + 2, (pct * (bar_w - 2)) / 100, 5);
-    char val[8];
-    if (no_data) {
-      strcpy(val, "--%");
-    } else {
-      sprintf(val, "%u%%", pct);
-    }
-    display.drawTextRightAlign(bar_x - 3, y, val);
-  }
+  // Channel-health bars use DisplayDriver::drawHealthBar (shared row helper).
 
   CayenneLPP sensors_lpp;
   int sensors_nb = 0;
@@ -332,10 +313,10 @@ public:
       // 5 rows at 9px pitch (text is 8px high) so all three channel-health
       // metrics render as uniform label + bar rows within a 128x64 display
       display.setTextSize(1);
-      // freq / sf
+      // freq / sf / tx power
       display.setColor(UIColor::primary_txt);
       display.setCursor(0, 19);
-      sprintf(tmp, "FQ:%06.3f SF%d", _node_prefs->freq, _node_prefs->sf);
+      sprintf(tmp, "FQ:%06.3f SF%d TX%d", _node_prefs->freq, _node_prefs->sf, _node_prefs->tx_power_dbm);
       display.print(tmp);
 
       // bw / cr, plus noise floor
@@ -345,27 +326,18 @@ public:
       sprintf(tmp, "NF:%d", radio_driver.getNoiseFloor());
       display.drawTextRightAlign(display.width(), 28, tmp);
 
-      // channel free % (100 - windowed utilization) with mini bar
-      display.setColor(UIColor::primary_txt);
-      display.setCursor(0, 37);
-      display.print("CH free");
-      drawHealthBar(display, 37, 100 - radio_driver.getChannelUtilizationPct(), 50);
+      // channel-health bars (windowed, positive framing: full bar = good);
+      // radios that measure nothing (e.g. ESP-NOW) render as no-data instead
+      // of a false "all healthy" bar
+      bool has_health = radio_driver.hasChannelHealth();
+      display.drawHealthBar(37, "CH free", has_health ? 100 - radio_driver.getChannelUtilizationPct() : 0, 50, !has_health);
+      display.drawHealthBar(46, "RX ready", has_health ? 100 - radio_driver.getRxDeafnessPct() : 0, 80, !has_health);
 
-      // RX readiness % (100 - windowed deafness) with mini bar
-      display.setCursor(0, 46);
-      display.print("RX ready");
-      drawHealthBar(display, 46, 100 - radio_driver.getRxDeafnessPct(), 80);
-
-      // RX quality: windowed good vs total packet decodes (~10 min window,
-      // extrapolated while it fills after boot/reset) as a uniform bar row like
-      // the two above; the underlying counts stay available via stats-radio
-      display.setColor(UIColor::primary_txt);
-      display.setCursor(0, 55);
-      display.print("RX quality");
-      uint16_t rx_good = 0, rx_total = 0;
-      radio_driver.getRxQualityCounts(rx_good, rx_total);
-      uint8_t rxq_pct = (rx_total > 0) ? (uint8_t)((rx_good * 100u) / rx_total) : 0;
-      drawHealthBar(display, 55, rxq_pct, 80, rx_total == 0);
+      // RX quality: windowed good vs total packet decodes (~10 min window) as
+      // a uniform bar row like the two above; the underlying counts stay
+      // available via stats-radio
+      uint8_t rxq_pct = 0;
+      display.drawHealthBar(55, "RX quality", rxq_pct, 80, !radio_driver.getRxQualityPct(rxq_pct));
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - 32) / 2, 18,

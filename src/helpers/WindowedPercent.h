@@ -47,6 +47,13 @@ public:
     for (int i = 0; i < 5; i++) num += buckets[i];
     return (den == 0) ? 0 : (uint8_t)((num * 100) / den);
   }
+
+  // Forget everything (stats reset). last_ms is left alone: loop()-rate
+  // callers pass dt of only a few ms, so observation restarts at ~0.
+  void clear() {
+    for (int i = 0; i < 5; i++) buckets[i] = 0;
+    cur_active = 0; cur_total = 0; oldest = 0; filled = 0;
+  }
 };
 
 /**
@@ -62,7 +69,6 @@ class WindowedCountedRatio {
   uint16_t cur_ev, cur_bad;               // current (partial) bucket
   uint32_t cur_ms;                        // ms accumulated toward the next bucket roll
   uint8_t  oldest;
-  uint8_t  filled;
   uint32_t last_ms;
   void advance(uint32_t now) {                // roll completed buckets
     uint32_t dt = now - last_ms; last_ms = now;
@@ -75,13 +81,12 @@ class WindowedCountedRatio {
     while (cur_ms >= BUCKET_MS) {             // so no single dt ever fills a bucket by itself
       ev[oldest] = cur_ev; bad[oldest] = cur_bad;
       oldest = (oldest + 1) % N_BUCKETS;
-      if (filled < N_BUCKETS) filled++;
       cur_ev = 0; cur_bad = 0;                // long stall: window just slides past
       cur_ms -= BUCKET_MS;
     }
   }
 public:
-  WindowedCountedRatio() : cur_ev(0), cur_bad(0), cur_ms(0), oldest(0), filled(0), last_ms(0) {
+  WindowedCountedRatio() : cur_ev(0), cur_bad(0), cur_ms(0), oldest(0), last_ms(0) {
     for (int i = 0; i < N_BUCKETS; i++) { ev[i] = 0; bad[i] = 0; }
   }
 
@@ -92,28 +97,19 @@ public:
   }
 
   // Forget everything (stats reset). last_ms is left alone: loop()-rate
-  // callers pass dt of only a few ms, so post-clear observation restarts at ~0
-  // and the warm-up extrapolation below applies again.
+  // callers pass dt of only a few ms, so post-clear observation restarts at ~0.
   void clear() {
     for (int i = 0; i < N_BUCKETS; i++) { ev[i] = 0; bad[i] = 0; }
-    cur_ev = 0; cur_bad = 0; cur_ms = 0; oldest = 0; filled = 0;
+    cur_ev = 0; cur_bad = 0; cur_ms = 0; oldest = 0;
   }
 
-  // Window totals: all events (attempts) and the failing subset. While the
-  // window is still FILLING (the first window-length after construction or
-  // clear()) the counts are extrapolated to the full window: events per
-  // observed time x window length. Rough at first (an early burst
-  // overshoots), but the number has full-window scale immediately and
-  // converges as the window fills.
+  // Window totals: all events (attempts) and the failing subset, saturated at
+  // 0xFFFF. Only the good/bad RATIO is meaningful for display; the absolute
+  // counts reflect what has actually been observed since construction or the
+  // last clear() (they grow to full-window scale as the window fills).
   void counts(uint16_t& n_ev, uint16_t& n_bad) const {
     uint32_t e = cur_ev, b = cur_bad;
     for (int i = 0; i < N_BUCKETS; i++) { e += ev[i]; b += bad[i]; }
-    uint32_t window_ms = (uint32_t)N_BUCKETS * BUCKET_MS;
-    uint32_t observed = (uint32_t)filled * BUCKET_MS + cur_ms;
-    if (observed >= BUCKET_MS && observed < window_ms) {  // warm-up: scale up
-      e = (uint32_t)(((uint64_t)e * window_ms) / observed);
-      b = (uint32_t)(((uint64_t)b * window_ms) / observed);
-    }
     n_ev = (e > 0xFFFF) ? 0xFFFF : (uint16_t)e;
     n_bad = (b > 0xFFFF) ? 0xFFFF : (uint16_t)b;
   }

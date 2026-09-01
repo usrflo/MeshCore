@@ -27,12 +27,13 @@ protected:
   // windowed channel-health metrics (sampled in loop())
   WindowedPercent _busy_win;      // channel busy: own TX, mid-receive, or energy above floor + margin
   WindowedPercent _deaf_win;      // radio not in RX (listening) mode
-  WindowedCountedRatio<60, 10000> _err_win;  // RX attempts with relevant CRC errors (~10 min window)
-  uint32_t _last_metric_ms;       // stamp of previous loop() metric sample
-  uint32_t _last_rssi_ms;         // rate limit for the RSSI busy poll
-  uint32_t _last_recv_cnt, _last_err_cnt;  // previous packet counters (for deltas)
-  uint32_t _last_strong_err_cnt = 0;       // previous SNR-relevant failure counter (for deltas)
-  bool _cur_busy;                 // last busy verdict (held between RSSI polls)
+  WindowedCountedRatio<> _err_win;  // RX attempts with relevant CRC errors (~10 min window)
+  uint32_t _last_metric_ms = 0;       // stamp of previous loop() metric sample
+  uint32_t _last_rssi_ms = 0;         // rate limit for the RSSI busy poll
+  uint32_t _last_recv_cnt = 0;        // previous packet counter (for deltas)
+  uint32_t _last_strong_err_cnt = 0;  // previous SNR-relevant failure counter (for deltas)
+  bool _cur_busy = false;             // last busy verdict (held between RSSI polls)
+  bool _rx_snr_latched = false;       // any packet status latched: getLastSNR() is trustworthy
 
   void idle();
   void startRecv();
@@ -71,6 +72,7 @@ public:
   virtual int16_t performChannelScan();
 
   int getNoiseFloor() const override { return _noise_floor; }
+  bool hasChannelHealth() override { return true; }
   uint8_t getChannelUtilizationPct() override { return _busy_win.pct(); }
   uint8_t getRxDeafnessPct() override { return _deaf_win.pct(); }
   void getRxQualityCounts(uint16_t& good, uint16_t& total) override {
@@ -78,6 +80,13 @@ public:
     _err_win.counts(ev, bad);
     total = ev;      // all reception attempts
     good = ev - bad; // ...of which decoded OK
+  }
+  bool getRxQualityPct(uint8_t& pct) override {
+    uint16_t ev, bad;
+    _err_win.counts(ev, bad);
+    if (ev == 0) { pct = 0; return false; }  // nothing observed yet: no verdict
+    pct = (uint8_t)(((ev - bad) * 100u) / ev);
+    return true;
   }
   void triggerNoiseFloorCalibrate(int threshold) override;
   void setCADEnabled(bool enable) override { _cad_enabled = enable; }
@@ -90,11 +99,13 @@ public:
   uint32_t getPacketsSent() const { return n_sent; }
   // Zeroing the counters without re-stamping the delta bases would underflow
   // the next loop() delta and inject a garbage spike into one ~10 min window
-  // bucket, so clear the window and stamps together with the counters.
+  // bucket, so clear the window and stamps together with the counters. All
+  // three channel-health windows are cleared so a stats reset produces a
+  // consistent all-metrics snapshot (the 5 s windows refill within seconds).
   void resetStats() {
     n_recv = n_sent = n_recv_errors = n_recv_errors_strong = 0;
-    _last_recv_cnt = 0; _last_err_cnt = 0; _last_strong_err_cnt = 0;
-    _err_win.clear();
+    _last_recv_cnt = 0; _last_strong_err_cnt = 0;
+    _busy_win.clear(); _deaf_win.clear(); _err_win.clear();
   }
 
   virtual float getLastRSSI() const override;

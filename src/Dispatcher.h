@@ -66,16 +66,20 @@ public:
   /**
    * \brief  windowed channel-health metrics: utilization/deafness over the
    *         last ~5 observed seconds, RX-quality counts over the last ~10
-   *         minutes (extrapolated to the full window while it fills after a
-   *         boot/reset). All use "0 = good" semantics; default 0 so radios
-   *         that do not implement them (e.g. ESPNOW) degrade gracefully.
+   *         minutes. All use "0 = good" semantics. hasChannelHealth() tells
+   *         callers whether this radio measures them at all: radios that do
+   *         not (e.g. ESPNOW) must be rendered as "no data" instead of a
+   *         false "all healthy" 0%.
    */
+  virtual bool hasChannelHealth() { return false; }
   virtual uint8_t getChannelUtilizationPct() { return 0; }  // % of time the channel was busy
   virtual uint8_t getRxDeafnessPct() { return 0; }          // % of time the radio was NOT in RX
   // Good vs total packet decodes in the RX-quality window (~10 min): 'total'
   // counts decodes plus SNR-relevant CRC failures (weak distant stations are
-  // excluded), 'good' the ones that decoded (passed CRC).
+  // excluded), 'good' the ones that decoded (passed CRC). The pct variant
+  // returns false while the window holds no events yet ("no data").
   virtual void getRxQualityCounts(uint16_t& good, uint16_t& total) { good = 0; total = 0; }
+  virtual bool getRxQualityPct(uint8_t& pct) { pct = 0; return false; }
 
   virtual void triggerNoiseFloorCalibrate(int threshold) { }
 
