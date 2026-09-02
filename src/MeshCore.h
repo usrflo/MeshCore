@@ -22,6 +22,14 @@
 #define MAX_PATH_SIZE        64
 #define MAX_TRANS_UNIT      255
 
+// Flood Corridor: a geo-corridor carried as a dedicated region in
+// ROUTE_TYPE_TRANSPORT_FLOOD packets (see helpers/CorridorCheck.h).
+// code_2 (transport_codes[1]) bits 15-12 hold the triple count N (0..8);
+// N×CORRIDOR_TRIPLE_BYTES travel in the Packet::corridor[] region, between
+// path and payload. 0 = no corridor (standard packet, full backward compat).
+#define MAX_CORRIDOR_TRIPLES   8
+#define CORRIDOR_TRIPLE_BYTES  4
+
 #if MESH_DEBUG && ARDUINO
   #include <Arduino.h>
   #define MESH_DEBUG_PRINT(F, ...) Serial.printf("DEBUG: " F, ##__VA_ARGS__)

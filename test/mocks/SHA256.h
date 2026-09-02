@@ -24,12 +24,25 @@ public:
     }
   }
 
-  void finalize(uint8_t* hash, size_t hashLen) {
+  void finalize(void* hashVoid, size_t hashLen) {
+    uint8_t* hash = static_cast<uint8_t*>(hashVoid);
     for (size_t i = 0; i < hashLen; i++) {
       hash[i] = _state[i % 32];
     }
   }
 
-  void resetHMAC(const uint8_t* key, size_t keyLen) {}
-  void finalizeHMAC(const uint8_t* key, size_t keyLen, uint8_t* hash, size_t hashLen) {}
+  void resetHMAC(const void* key, size_t keyLen) { (void)key; (void)keyLen; }
+
+  // Mock HMAC: fold the key in at finalize time so the result is a
+  // deterministic function of (key, data).  Real HMAC semantics are not
+  // required — but TransportKey::calcTransportCode() equality checks in tests
+  // need key- and data-sensitive output (the previous no-op left the
+  // destination uninitialized).
+  void finalizeHMAC(const void* keyVoid, size_t keyLen, void* hashVoid, size_t hashLen) {
+    SHA256 tmp;
+    memcpy(tmp._state, _state, sizeof(_state));
+    tmp._len = _len;
+    tmp.update(keyVoid, keyLen);
+    tmp.finalize(hashVoid, hashLen);
+  }
 };
