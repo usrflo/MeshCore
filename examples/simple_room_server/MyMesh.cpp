@@ -303,6 +303,19 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
       && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
     return false;
   }
+  // Flood Corridor geo-filter (mirrors simple_repeater): forward corridor floods
+  // only when this server's own position lies inside the corridor.  Fail-open
+  // when the position is unknown (0,0).
+  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD && packet->getCorridorCount() > 0) {
+    if (_prefs.node_lat != 0.0 || _prefs.node_lon != 0.0) {
+      CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+      uint8_t n = decodePacketCorridor(packet, triples, MAX_CORRIDOR_TRIPLES);
+      if (n > 0 && !isPointInCorridor((float)_prefs.node_lat, (float)_prefs.node_lon, triples, n)) {
+        MESH_DEBUG_PRINTLN("allowPacketForward: position outside corridor, dropping flood");
+        return false;
+      }
+    }
+  }
   return true;
 }
 

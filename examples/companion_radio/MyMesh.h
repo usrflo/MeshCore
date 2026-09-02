@@ -119,6 +119,13 @@ protected:
   void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0) override;
   void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0) override;
 
+  // Flood Corridor auto-scoping (see MyMesh.cpp): harvest corridor candidates
+  // from the contact table, propose, and send a corridor-scoped transport flood.
+  uint8_t buildCorridorProposal(float dst_lat, float dst_lon, CorridorProposal& proposal, uint8_t mode = 0);
+  void sendCorridorFlood(mesh::Packet* pkt, const CorridorProposal& proposal, uint32_t delay_millis);
+  bool corridorFloodLatched(const ContactInfo& recipient) const;
+  void corridorFloodLatch(const ContactInfo& recipient);
+
   void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;
   bool isAutoAddEnabled() const override;
   bool shouldAutoAddContactType(uint8_t type) const override;
@@ -238,6 +245,14 @@ private:
   unsigned long dirty_contacts_expiry;
 
   TransportKey send_scope;
+
+  // One corridor flood attempt per contact per latch window — retries within
+  // CORRIDOR_FLOOD_LATCH_MS (MyMesh.cpp) fall back to plain floods, since the
+  // on-node firmware cannot see whether the corridor attempt was delivered.
+  #define CORRIDOR_LATCH_SLOTS 4
+  struct CorridorLatchEntry { uint32_t key_prefix; uint32_t sent_millis; };
+  CorridorLatchEntry corridor_latch[CORRIDOR_LATCH_SLOTS];
+  uint8_t corridor_latch_next;
 
   uint8_t cmd_frame[MAX_FRAME_SIZE + 1];
   uint8_t out_frame[MAX_FRAME_SIZE + 1];
