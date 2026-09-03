@@ -32,6 +32,9 @@ public:
     // bytes at large counter values - worst case here must stay below 160
     // incl. NUL (it peaks at ~151). The error % is derivable as
     // 100 - good*100/tot and is not printed separately.
+    // (The RX-desync watchdog episode counter is NOT printed here for the same
+    // byte budget: desyncs surface via the error-flags bit ERR_EVENT_RX_DESYNC
+    // in the core stats and the driver's debug log.)
     uint16_t rx_good = 0, rx_total = 0;
     radio->getRxQualityCounts(rx_good, rx_total);
     sprintf(reply,

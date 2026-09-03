@@ -24,6 +24,16 @@
                                     // interference, not a quiet channel the node merely adapted to. Keeps a
                                     // multi-hour jammer visible in the utilization even once the ring has filled
                                     // with contaminated medians
+
+// RX-desync watchdog: the `state` variable is firmware-side truth. If the chip silently
+// leaves RX (supply dip during TX, SPI glitch, front-end upset) the RAM copy still says
+// STATE_RX, so recvRaw() never re-arms and the Dispatcher-side check (reading the same
+// variable) stays quiet — the node goes deaf until reboot, and the Current-RSSI register
+// freezes at the last energy seen (the "noise floor pinned high" symptom).
+#define RX_DESYNC_CHECK_INTERVAL_MS  10000   // cadence of the chip-mode verification poll
+#define RX_DESYNC_CONFIRM_TICKS      2       // consecutive bad polls before recovery starts (debounces one misread,
+                                             // e.g. the first GetStatus that wakes the chip from warm sleep)
+#define RX_DESYNC_FATAL_STREAK       5       // streak that survived sleep-level recovery — flag via ERR_EVENT_RX_DESYNC
 #ifdef USE_CC310_HW_CRYPTO
 #include <Adafruit_nRFCrypto.h>
 #endif
@@ -38,6 +48,8 @@ protected:
   mesh::MainBoard* _board;
   uint32_t n_recv, n_sent, n_recv_errors;
   uint32_t n_recv_errors_strong;   // failures whose SNR says they should have decoded (RX-quality window)
+  uint16_t n_rx_desync_events;    // desync episodes detected (recovery was attempted for each)
+  uint16_t n_rx_desync_fatals;    // episodes that survived sleep-level recovery (reboot needed)
   int16_t _noise_floor, _threshold;
   bool _cad_enabled;
   uint16_t _num_floor_samples;
@@ -50,6 +62,8 @@ protected:
   uint8_t _quiet_floor_idx;    // next slot to overwrite
   int16_t _quiet_floor;        // P10 of the ring: the busy-verdict reference (see busyRefFloor())
   uint8_t _preamble_sf;
+  uint32_t _last_rx_sync_check;   // millis() of the last chip-mode verification (RX-desync watchdog)
+  uint8_t _rx_desync_streak;      // consecutive verifications that found the chip out of RX (0 = healthy)
 
   // windowed channel-health metrics (sampled in loop())
   WindowedPercent _busy_win;      // channel busy: own TX, mid-receive, or energy above floor + margin
@@ -137,6 +151,14 @@ public:
     _last_recv_cnt = 0; _last_strong_err_cnt = 0;
     _busy_win.clear(); _deaf_win.clear(); _err_win.clear();
   }
+
+  // RX-desync watchdog. verifyRxChipMode() reads the chip's real operating mode;
+  // base assumes RX (no authoritative status register on every radio type).
+  // Override in radio-specific wrappers that can check (SX126x GetStatus).
+  virtual bool verifyRxChipMode() { return true; }
+  bool isRxDamaged() const override { return _rx_desync_streak >= RX_DESYNC_FATAL_STREAK; }
+  uint16_t getRxDesyncEvents() const { return n_rx_desync_events; }
+  uint16_t getRxDesyncFatals() const { return n_rx_desync_fatals; }
 
   virtual float getLastRSSI() const override;
   virtual float getLastSNR() const override;
