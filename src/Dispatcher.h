@@ -63,6 +63,11 @@ public:
 
   virtual int getNoiseFloor() const { return 0; }
 
+  // RX-desync watchdog: true when the driver detected the chip left RX behind the
+  // firmware's back and its own recovery attempts failed (reboot needed). Radio
+  // implementations without an authoritative status register stay false.
+  virtual bool isRxDamaged() const { return false; }
+
   virtual void triggerNoiseFloorCalibrate(int threshold) { }
 
   virtual void setCADEnabled(bool enable) { }
@@ -111,6 +116,7 @@ typedef uint32_t  DispatcherAction;
 #define ERR_EVENT_FULL              (1 << 0)
 #define ERR_EVENT_CAD_TIMEOUT       (1 << 1)
 #define ERR_EVENT_STARTRX_TIMEOUT   (1 << 2)
+#define ERR_EVENT_RX_DESYNC         (1 << 3)   // radio wedged out of RX and resisted the wrapper's recovery
 
 // Pool-shedding backpressure: when the free packet pool (slots available for allocNew/RX) drops
 // to or below this threshold, skip DIRECT resends (resendPacket) to protect RX liveness. The
