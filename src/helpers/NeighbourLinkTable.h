@@ -12,12 +12,16 @@
 // would mark N falsely covered -> M would suppress and starve N (the deafening
 // this feature exists to prevent). Edges are therefore directed and never flipped.
 //
-// Direction is established by ACTIVE TRACE measurement (simple_repeater): the
+// Direction is established PRIMARILY by ACTIVE TRACE measurement (simple_repeater): the
 // repeater sends a coverage TRACE [a,b,self] that returns to it; the SNR measured
 // at b of a's forward tells whether b can hear a -> a reaches b -> directed edge
 // a->b is recorded. (Earlier revisions inferred this passively from consecutive
-// flood-path hops; that built up too slowly in sparse/mast topologies, so the
-// graph is now measured.)
+// flood-path hops; as the ONLY source that built up too slowly in sparse/mast
+// topologies, so it was removed. It is back as a COMPLEMENT: in busy meshes an
+// overheard relay path [...,a,b] proves b decoded a -- a presence-only `passive`
+// edge at zero extra airtime, kept fresh by ongoing traffic under a shorter TTL;
+// the active prober's hasEdge skip then leaves such pairs alone. A measured TRACE
+// refresh upgrades a passive edge to a full-TTL measured one.)
 //
 // simple_repeater uses these edges to INFER coverage: if a near neighbour fi
 // forwarded flood F, then every near neighbour N with a fresh edge fi->N very
@@ -40,11 +44,12 @@
 // re-probe it every cadence tick.  The re-probe backoff is PER PAIR and EXPONENTIAL:
 // the first failure waits BASE (~2 min) -- so a transient cause (a momentarily-silent
 // forwarder, a brief collision) heals on the next probe -- and each CONSECUTIVE failure
-// doubles the wait, capped at MAX (~10 h).  A permanently-absent pair therefore ramps
-// 2,4,8,... min up to one re-probe per ~10 h (the same steady state as a flat 10 h TTL,
-// but without the 10 h blind spot for transients), while a good link that recovers is
-// cleared immediately by addEdge() (a positive edge supersedes the record).  This cache
-// is consulted ONLY to gate re-probing; coverage inference reads POSITIVE edges
+// quadruples the wait, capped at MAX (~24 h).  A permanently-absent pair therefore ramps
+// 2,8,32 min, ~2 h, ~8.5 h up to one re-probe per ~24 h (the same steady state as a flat
+// 24 h TTL, but without the 24 h blind spot for transients), while a good link that
+// recovers is cleared immediately by addEdge() -- a measured OR passively-observed
+// positive edge supersedes the record, which is what makes the long cap safe.  This
+// cache is consulted ONLY to gate re-probing; coverage inference reads POSITIVE edges
 // exclusively (absence is never treated as coverage).
 
 #ifndef NEIGHBOUR_LINK_TABLE_SIZE
@@ -55,17 +60,21 @@
   #define NEIGHBOUR_LINK_TTL_MILLIS   (36UL * 60UL * 60UL * 1000UL)   // ~36h -- coverage is re-measured on expiry
 #endif
 
+#ifndef NEIGHBOUR_LINK_PASSIVE_TTL_MILLIS
+  #define NEIGHBOUR_LINK_PASSIVE_TTL_MILLIS  (30UL * 60UL * 1000UL)  // ~30min -- passive (flood-path) edges are presence-only (no SNR) and must be re-witnessed by ongoing traffic far sooner than measured edges
+#endif
+
 #ifndef NEIGHBOUR_LINK_NEG_HASH_SIZE
   #define NEIGHBOUR_LINK_NEG_HASH_SIZE  2    // TRACE coverage hashes are 2 bytes; negatives are stored exact-width
 #endif
 #ifndef NEIGHBOUR_LINK_NEG_TABLE_SIZE
-  #define NEIGHBOUR_LINK_NEG_TABLE_SIZE  32  // ~20 directed pairs among 5 near neighbours + churn headroom
+  #define NEIGHBOUR_LINK_NEG_TABLE_SIZE  64  // 20 directed pairs among 5 near neighbours + sticky-set churn + passive-harvest negatives; small enough that LRU eviction of a still-ramping entry is rare
 #endif
 #ifndef NEIGHBOUR_LINK_NEG_BACKOFF_BASE_MILLIS
   #define NEIGHBOUR_LINK_NEG_BACKOFF_BASE_MILLIS  (2UL * 60UL * 1000UL)            // first backoff after a fresh "no edge" probe (~2 min); a transient cause (a momentarily-silent forwarder, a brief collision) heals on the next probe
 #endif
 #ifndef NEIGHBOUR_LINK_NEG_BACKOFF_MAX_MILLIS
-  #define NEIGHBOUR_LINK_NEG_BACKOFF_MAX_MILLIS   (10UL * 60UL * 60UL * 1000UL)    // cap: each consecutive failure doubles the wait up to ~10 h, so a permanently-absent pair settles to one re-probe per ~10 h (same steady state as a flat 10 h TTL) while a transient one recovers in minutes
+  #define NEIGHBOUR_LINK_NEG_BACKOFF_MAX_MILLIS   (24UL * 60UL * 60UL * 1000UL)    // cap: a permanently-absent pair settles to one re-probe per ~24 h. Field data showed absent pairs dominating probe volume (neg=806 vs edge=51); a passive edge (flood-path) or a measured edge clears the record on recovery, so a long cap is safe.
 #endif
 
 class NeighbourLinkTable {
@@ -74,6 +83,7 @@ class NeighbourLinkTable {
     uint8_t  dst[MAX_HASH_SIZE];   // reached  (the later hop -- it heard src)
     uint8_t  hash_size;
     uint32_t last_seen_ms;
+    bool     passive;              // learned from an overheard flood path (presence-only), not a measured TRACE edge
     bool     active;
   };
 
@@ -113,12 +123,15 @@ public:
   // prefix-tolerant hasEdge() lookup, the WRITE side must NOT merge two distinct
   // neighbours that merely share a short common prefix. (simple_repeater records
   // only at TRACE_MEAS_HASH_SIZE, so distinct measurements are never coalesced.)
-  void addEdge(const uint8_t* src, const uint8_t* dst, uint8_t hs, uint32_t now) {
+  // `passive` marks a presence-only edge learned from an overheard flood path; a
+  // refresh by a MEASURED (TRACE) observation upgrades it to a full-TTL edge.
+  void addEdge(const uint8_t* src, const uint8_t* dst, uint8_t hs, uint32_t now, bool passive = false) {
     _clearNegative(src, dst, hs);                     // a positive edge supersedes a stale "no edge" record
     for (int i = 0; i < NEIGHBOUR_LINK_TABLE_SIZE; i++) {
       Link& l = _links[i];
       if (l.active && l.hash_size == hs && _same(l.src, src, hs) && _same(l.dst, dst, hs)) {
         l.last_seen_ms = now;          // refresh existing directed edge
+        l.passive = l.passive && passive;
         return;
       }
     }
@@ -128,6 +141,7 @@ public:
     memcpy(l.dst, dst, hs);
     l.hash_size = hs;
     l.last_seen_ms = now;
+    l.passive = passive;
     l.active = true;
   }
 
@@ -172,11 +186,13 @@ public:
     for (int i = 0; i < NEIGHBOUR_LINK_NEG_TABLE_SIZE; i++) {
       NegLink& n = _neg[i];
       if (n.active && _same(n.src, src, NEIGHBOUR_LINK_NEG_HASH_SIZE) && _same(n.dst, dst, NEIGHBOUR_LINK_NEG_HASH_SIZE)) {
-        // Re-probed and failed AGAIN -> looks permanent: double the backoff (capped at
-        // MAX), so a persistently-absent pair is retried ever more rarely. A transient
-        // failure never reaches this branch twice -- it is cleared by addEdge() on success.
+        // Re-probed and failed AGAIN -> looks permanent: quadruple the backoff (capped at
+        // MAX), so a persistently-absent pair ramps to once-a-day within a handful of failures
+        // (field data: absent pairs dominated probe volume, neg=806 vs edge=51). A transient
+        // failure never reaches this branch twice -- it is cleared by addEdge() on success,
+        // including passively-learned flood-path edges.
         if (n.backoff_ms == 0) n.backoff_ms = NEIGHBOUR_LINK_NEG_BACKOFF_BASE_MILLIS;
-        n.backoff_ms *= 2;
+        n.backoff_ms *= 4;
         if (n.backoff_ms > NEIGHBOUR_LINK_NEG_BACKOFF_MAX_MILLIS) n.backoff_ms = NEIGHBOUR_LINK_NEG_BACKOFF_MAX_MILLIS;
         n.last_seen_ms = now;          // restart the (now longer) backoff window
         return;
@@ -216,7 +232,8 @@ public:
 private:
   static bool _expired(const Link& l, uint32_t now) {
     // uint32 subtraction is wrap-safe for any ttl well below the wrap period.
-    return (uint32_t)(now - l.last_seen_ms) > NEIGHBOUR_LINK_TTL_MILLIS;
+    uint32_t ttl = l.passive ? NEIGHBOUR_LINK_PASSIVE_TTL_MILLIS : NEIGHBOUR_LINK_TTL_MILLIS;
+    return (uint32_t)(now - l.last_seen_ms) > ttl;
   }
 
   // Has this pair's per-pair re-probe backoff elapsed? (i.e. it is eligible to be

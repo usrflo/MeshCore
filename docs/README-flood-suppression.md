@@ -63,15 +63,40 @@ after their own RX delay. This makes the cancellation deadline
 `own_TX_fire_time` instead of `own_TX_fire_time − neighbour_calcRxDelay`, i.e.
 cancels reliably land before the redundant TX goes out.
 
+### Passive flood-path edges (complement to TRACE measurement)
+
+The reach graph is populated **primarily** by active TRACE measurement, but
+`MyMesh::learnPassivePathEdges` (run from `logRx` for every overheard flood)
+adds a zero-airtime complement: a flood relay path ending `[..., a, b]` proves
+that **b decoded a's forward** — b appended its hash only after decoding — so
+the directed edge `a → b` is recorded. Such edges are *presence-only*
+(decode-qualified, no SNR value), carry a shorter refresh-required TTL
+(~30 min, `NEIGHBOUR_LINK_PASSIVE_TTL_MILLIS`) and a `passive` flag; a TRACE
+measurement of the same pair upgrades the entry to a full-TTL measured edge.
+A passively-observed decode also clears a stale "no edge" record (the same
+safety valve as a measured edge).
+
+Scope limits, by construction: the originator's hash is never in a flood path
+(only relays append), so only **relay→relay** pairs are observable; both
+endpoints must resolve to M's **near** neighbours (M, a, b form a triangle);
+and resolution is **uniqueness-checked** (`findUniqueNearNeighbour`) — a path
+prefix shared by two near neighbours (common with 1-byte flood paths,
+`path_hash_mode 0`) is refused rather than mis-resolved, since a wrong edge
+would persist in this table. In sparse/mast topologies this channel stays
+quiet and the active prober does the work; in busy meshes it populates and
+refreshes the graph from real traffic, and the prober's `hasEdge` skip then
+leaves those pairs alone. The `near` counter `pasv=` counts passive
+observations (refreshes, not distinct edges).
+
 ---
 
 ## Configuration
 
-There is **one master switch** and four tuning parameters. The threshold **C**,
+There is **one master switch** and three tuning parameters. The threshold **C**,
 `snr.hi` and `snr.lo` are **not user-configurable** — they are derived from the
 neighbour table (adaptive) with static fallbacks (see *Adaptive mode*).
 
-`NodePrefs` fields (`src/helpers/CommonCLI.h`), persisted at file bytes 295–299
+`NodePrefs` fields (`src/helpers/CommonCLI.h`), persisted at file bytes 295–298
 (`src/helpers/CommonCLI.cpp`):
 
 | Field | Type | Default | Meaning |
@@ -80,7 +105,10 @@ neighbour table (adaptive) with static fallbacks (see *Adaptive mode*).
 | `flood_suppress_snr_hi` | `int8_t` (dB) | `9` | Overheard forward with SNR `>=` this counts **double** (adaptive p75; configured value is the fallback). |
 | `flood_suppress_snr_lo` | `int8_t` (dB) | `0` | Near-membership threshold; overheard forward with SNR `<` this counts **0** (adaptive p25; configured value is the fallback). |
 | `flood_suppress_delay_x` | `uint8_t` | `3` | Extra TX-delay multiplier for central flood relays. |
-| `trace_tx_power_dbm` | `int8_t` (dBm) | `10` | TX power for coverage TRACE probes only (lower = less disturbance). |
+
+Coverage TRACE probes TX at the node's normal `tx_power_dbm` (no separate knob): the
+probe's hop-1 M→a must measure the same link the graph represents — probing weaker
+systematically fails hop-1 and records false no-edges / over-excludes reach.
 
 The feature is **on by default**; `set flood.suppress off` (or YAML
 `flood_suppress: 0`) disables it completely.
@@ -97,7 +125,6 @@ The feature is **on by default**; `set flood.suppress off` (or YAML
 | `set flood.suppress.snr.hi <dB>` | `-30..30` (`get flood.suppress.snr.hi`) |
 | `set flood.suppress.snr.lo <dB>` | `-30..30` (`get flood.suppress.snr.lo`); adaptive p25 fallback |
 | `set flood.suppress.delay.factor <n>` | `0..8` (`get flood.suppress.delay.factor`) |
-| `set trace.tx.power <dBm>` | `-9..30` (`get trace.tx.power`) |
 
 ### Channel-state policy: deliberately none
 

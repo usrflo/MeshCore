@@ -78,8 +78,7 @@ struct RepeaterStats {
   #define NEAR_NEIGHBOUR_COVERAGE_CAP  5    // max near neighbours M guarantees coverage for
 #endif
 #define TRACE_MEAS_HASH_SIZE           2    // bytes/hash in a coverage TRACE visit-list (2 avoids prefix collisions)
-#define TRACE_MEAS_TIMEOUT_MS          3000 // retry once, then give up, if a coverage TRACE does not return in time
-#define TRACE_TX_POWER_RESTORE_MS      2000 // restore normal TX power this long after a measurement burst
+#define TRACE_MEAS_TIMEOUT_MS          8000 // retry once, then give up, if a coverage TRACE does not return in time (3 hops + relay delays + queueing behind floods at pri 5 -- 3s declared busy-net failures premature)
 #define TRACE_PENDING_MAX              8    // in-flight coverage traces (<=4 pairs x 2 directions)
 // Part 3 -- unidirectional-link handling. M->N is never measured directly; it is inferred
 // from coverage-TRACE first-hop outcomes: a [N,*] trace returns iff M's TX reached N. After
@@ -87,6 +86,10 @@ struct RepeaterStats {
 // and dropped from the protection set (M owes coverage only to neighbours it can reach).
 #define M_REACH_UNREACHABLE_TIMEOUTS  2                  // consec first-hop-N timeouts -> M-unreachable
 #define M_REACH_RECONFIRM_MS          (24UL*3600UL*1000UL)  // re-test a confirmed link after this idle (antenna drift)
+#define M_REACH_RETEST_MS             (6UL*3600UL*1000UL)   // after this long excluded, a node's pairs are probed again (recovery path)
+#ifndef MEAS_TOP_HYST_X4
+  #define MEAS_TOP_HYST_X4  12   // 3 dB (x4 SNR units): a challenger must beat the weakest sticky-set member by this much to swap in
+#endif
 
 struct NeighbourInfo {
   mesh::Identity id;
@@ -97,6 +100,7 @@ struct NeighbourInfo {
   bool     m_reach_confirmed;     // a [N,*] coverage trace has returned (M->N works)
   uint8_t  m_reach_timeouts;      // consecutive first-hop-N 2nd-miss timeouts since last confirm
   uint32_t m_reach_last_ok_ms;    // millis() of the last first-hop-N success (aging)
+  uint32_t m_reach_last_fail_ms;  // millis() of the last hop-1-unobserved 2nd-miss (re-test clock while excluded)
 };
 
 // A leaf CLIENT (companion/sensor/room-server) directly attached to this repeater
@@ -168,16 +172,22 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
     uint8_t  b[TRACE_MEAS_HASH_SIZE];   // reached  hash prefix
     uint32_t sent_ms;
     uint8_t  retries;                    // 0 or 1 (single retry on timeout)
+    bool     hop1_seen;                  // we overheard a relaying this trace -> M->a works (hop attribution)
     bool     active;
   };
   PendingTrace _trace_pending[TRACE_PENDING_MAX] = {};
   uint32_t      _trace_tag_next = 1;   // 0 reserved as sendCoverageTrace() failure sentinel
   unsigned long _next_meas_check_ms = 0;   // cadenced diff/expiry check
   unsigned long _meas_jitter_until = 0;    // inter-burst jitter backoff
-  unsigned long _trace_tx_revert_at = 0;   // restore TX power after a burst
   uint8_t       _meas_rr_offset = 0;       // round-robin start index into the flat directed-pair list (advanced per probe)
+  // Sticky measurement top-set (hysteresis over topNearNeighbours; see coverageTopNeighbours).
+  // Hash-keyed so entries survive neighbours[] LRU reordering; indices re-validated each tick.
+  struct MeasTopPeer { uint8_t hash[TRACE_MEAS_HASH_SIZE]; int8_t idx; bool used; };
+  MeasTopPeer _meas_top[NEAR_NEIGHBOUR_COVERAGE_CAP] = {};
   uint32_t      _meas_sent = 0, _meas_returned = 0, _meas_edge = 0, _meas_timeout = 0, _meas_neg = 0;  // coverage-TRACE observability (surfaced in `near`)
+  uint32_t      _meas_reach_tmo = 0;   // 2nd-miss timeouts attributed to hop-1 (M->a) -- (a,b) left unknown (surfaced in `near` as rtmo)
   uint32_t      _meas_harvested = 0, _meas_harvest_neg = 0;  // Part 2: edges/negatives adopted from overheard neighbours' TRACES (surfaced in `near` as harv)
+  uint32_t      _meas_passive = 0;   // passive flood-path edge observations (refresh count, not distinct edges; surfaced in `near` as pasv)
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;
@@ -200,10 +210,14 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
 
   void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
   void touchNeighbourByHash(const mesh::Packet* packet);  // refresh a KNOWN neighbour's liveness/SNR from an overheard forward
+  void learnPassivePathEdges(const mesh::Packet* pkt);    // adopt presence-only a->b edges from consecutive NEAR hops of an overheard flood path
   bool isNearNeighbour(int i, uint32_t now) const;        // fresh (<=NEIGHBOUR_FRESH_S) and SNR>=snr_lo
   bool isExcludedFromProtection(int i, uint32_t now_ms) const;  // M cannot transmit-reach neighbours[i] -> not owed coverage
+  bool measProbeAllowed(int i, uint32_t now_ms) const;          // may we PROBE pairs involving neighbours[i]? (excluded: only on the periodic re-test)
   int8_t findNearNeighbour(const uint8_t* h, uint8_t hs, uint32_t now) const;  // index of near neighbour matching hash, else -1
+  int8_t findUniqueNearNeighbour(const uint8_t* h, uint8_t hs, uint32_t now) const;  // as above, but -1 unless EXACTLY ONE near neighbour shares the prefix (collision-safe resolution)
   uint8_t topNearNeighbours(int8_t out[], uint8_t max_n, uint32_t now) const;  // fill out[] with up to max_n near-neighbour INDICES, strongest SNR first
+  uint8_t coverageTopNeighbours(int8_t out[], uint32_t now);  // STICKY measurement-only top set (hysteresis over topNearNeighbours; suppression keeps the raw ranking)
   int8_t findInTopNear(const uint8_t* h, uint8_t hs, const int8_t* top, uint8_t top_n) const;  // index (into neighbours[]) of a top-N peer matching hash, else -1
   bool allNearNeighboursCovered(const FloodSuppressionEntry& e, uint32_t now) const;  // >=1 top-N near && every one in e.covered
   bool nearReaches(int from_i, int to_j, uint8_t hs) const;  // fresh DIRECTED reach edge: neighbours[from_i] reaches neighbours[to_j] (to_j heard from_i). Freshness is millis-based (TTL is in ms).
