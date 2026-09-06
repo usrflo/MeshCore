@@ -505,11 +505,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
 
 void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* reply) {
   const char* config = &command[4];
-<<<<<<< HEAD
   // (radio-pref set commands -- dutycycle/af/int.thresh/cad/agc.reset.interval/multi.acks/tx/freq --
   //  moved upstream into CommonRadioPrefs::handleCommand, which runs before this.)
-=======
->>>>>>> feature/flood-suppression
   if (memcmp(config, "flood.suppress ", 15) == 0) {
     _prefs->flood_suppress = memcmp(&config[15], "on", 2) == 0;
     savePrefs();
@@ -526,11 +523,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     int n = atoi(&config[28]);
     if (n >= 0 && n <= 8) { _prefs->flood_suppress_delay_x = n; savePrefs(); strcpy(reply, "OK"); }
     else strcpy(reply, "Error, must be 0..8");
-<<<<<<< HEAD
-  } else if (memcmp(config, "trace.tx.power ", 15) == 0) {
-    int db = atoi(&config[15]);
-    if (db >= -9 && db <= 30) { _prefs->trace_tx_power_dbm = db; savePrefs(); strcpy(reply, "OK"); }
-    else strcpy(reply, "Error, must be -9..30 dB");
   } else if (memcmp(config, "max.resend ", 11) == 0) {
     int v = atoi(&config[11]);
     if (v < 0 || v > 3) {
@@ -540,8 +532,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
       savePrefs();
       strcpy(reply, "OK");
     }
-=======
->>>>>>> feature/flood-suppression
   } else if (memcmp(config, "allow.read.only ", 16) == 0) {
     _prefs->allow_read_only = memcmp(&config[16], "on", 2) == 0;
     savePrefs();
@@ -756,11 +746,8 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
 
 void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* reply) {
   const char* config = &command[4];
-<<<<<<< HEAD
   // (radio-pref get commands -- dutycycle/af/int.thresh/cad/agc.reset.interval/multi.acks/tx/freq --
   //  moved upstream into CommonRadioPrefs::handleCommand, which runs before this.)
-=======
->>>>>>> feature/flood-suppression
   if (memcmp(config, "flood.suppress.delay.factor", 27) == 0) {
     sprintf(reply, "> %d", (uint32_t) _prefs->flood_suppress_delay_x);
   } else if (memcmp(config, "flood.suppress.snr.hi", 21) == 0) {
@@ -770,12 +757,9 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "flood.suppress", 14) == 0) {
     sprintf(reply, "> %s", _prefs->flood_suppress ? "on" : "off");
     _callbacks->formatFloodSuppressRatioReply(reply + strlen(reply));
-<<<<<<< HEAD
   } else if (memcmp(config, "max.resend", 10) == 0) {
     sprintf(reply, "> %d", (uint32_t) _prefs->max_resend_attempts);
     _callbacks->formatResendRatioReply(reply + strlen(reply));
-=======
->>>>>>> feature/flood-suppression
   } else if (memcmp(config, "allow.read.only", 15) == 0) {
     sprintf(reply, "> %s", _prefs->allow_read_only ? "on" : "off");
   } else if (memcmp(config, "flood.advert.interval", 21) == 0) {
@@ -823,11 +807,6 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     } else {
       strcpy(reply, "> strict");
     }
-<<<<<<< HEAD
-  } else if (memcmp(config, "trace.tx.power", 14) == 0) {
-    sprintf(reply, "> %d dB", (int) _prefs->trace_tx_power_dbm);
-=======
->>>>>>> feature/flood-suppression
   } else if (memcmp(config, "public.key", 10) == 0) {
     strcpy(reply, "> ");
     mesh::Utils::toHex(&reply[2], _callbacks->getSelfId().pub_key, PUB_KEY_SIZE);
