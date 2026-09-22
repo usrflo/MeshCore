@@ -272,3 +272,56 @@ inline bool isPointInCorridor(float lat, float lon,
     }
     return false;
 }
+
+// --- Destination zone (DZ flag) ---
+
+// True if the point lies inside the corridor's DESTINATION ZONE: with
+// dest_last_triple (DZ=1) that is the last circle only (the capsules before
+// it are mere carriage); otherwise (DZ=0) the whole corridor is the
+// destination zone.  An unlimited last radius is always inside.  Flood
+// suppression uses this to decide where reducing forwardings is forbidden
+// ("deliver into every corner of the destination zone").
+inline bool isPointInDestinationZone(float lat, float lon,
+                                     const CorridorTriple* circles, int count,
+                                     bool dest_last_triple)
+{
+    if (count <= 0) return false;
+    if (!dest_last_triple) return isPointInCorridor(lat, lon, circles, count);
+    const CorridorTriple& last = circles[count - 1];
+    if (last.radius_km >= CORRIDOR_RADIUS_UNLIMITED_KM) return true;
+    return pointInCorridorSegment(lat, lon,
+                                  last.lat, last.lon, last.radius_km,
+                                  last.lat, last.lon, last.radius_km);
+}
+
+// Suppression exemption: true when a flood carrying this corridor must NOT
+// be suppressed at this node (single choke point for the flood-suppression
+// gate).  DZ=0 (whole corridor = destination zone): always exempt — a node
+// that cannot know it is outside must not cut delivery (parity with the
+// geo-filter's fail-open).  DZ=1: exempt only with a known position inside
+// the last circle; positionless nodes on the transport section remain
+// suppressible.  Non-corridor packets are never exempt via this helper.
+inline bool corridorNeverSuppress(const mesh::Packet* pkt, float lat, float lon) {
+    if (pkt == nullptr || !pkt->hasCorridorExt() || pkt->getCorridorVer() != 0) return false;
+    if (!pkt->isCorridorDestLastTriple()) return true;   // whole corridor = destination zone
+    if (pkt->getCorridorCount() == 0) return false;      // degenerate word: no zone to protect
+    if (lat == 0.0f && lon == 0.0f) return false;        // unknown position: transport handling
+    CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+    uint8_t n = decodePacketCorridor(pkt, triples, MAX_CORRIDOR_TRIPLES);
+    return n > 0 && isPointInDestinationZone(lat, lon, triples, n, true);
+}
+
+// --- Reversal (reply fallback) ---
+
+// Reverse the triple order in place.  The capsule geometry is symmetric
+// under reversal, so the pipe stays the same — only the destination zone
+// swaps ends: combined with DZ=1 the ORIGINAL FIRST circle becomes the
+// destination zone.  A responder replying along the corridor it received
+// re-encodes the packet fully (its own code_1 over the new wire view).
+inline void reverseCorridor(CorridorTriple* circles, int count) {
+    for (int i = 0, j = count - 1; i < j; i++, j--) {
+        CorridorTriple t = circles[i];
+        circles[i] = circles[j];
+        circles[j] = t;
+    }
+}
