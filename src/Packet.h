@@ -83,18 +83,35 @@ public:
   void setPathHashCount(uint8_t n) { path_len &= ~63; path_len |= n; }
   void setPathHashSizeAndCount(uint8_t sz, uint8_t n) { path_len = ((sz - 1) << 6) | (n & 63); }
 
-  // Flood Corridor: triple count travels in code_2 (transport_codes[1]) bits 15-12.
-  // Only meaningful for packets with transport codes (ROUTE_TYPE_TRANSPORT_*).
-  uint8_t getCorridorCount() const { return (uint8_t)((transport_codes[1] >> 12) & 0x0F); }
-  // Corrupt or hostile encoding: code_2 advertises more triples than corridor[]
-  // can hold.  Every legitimate sender clamps to MAX_CORRIDOR_TRIPLES (fillCorridor,
-  // makeCorridorHeader, the companion opcode-53 handler, the Rust codec).
-  bool hasOversizedCorridor() const { return hasTransportCodes() && getCorridorCount() > MAX_CORRIDOR_TRIPLES; }
-  // Corridor region size in bytes, or 0 when absent/invalid.  Clamped so every
-  // consumer (parse, serialize) stays inside the fixed corridor[] buffer even
-  // if a hasOversizedCorridor() check is ever missed.
+  // Flood Corridor: code_2 (transport_codes[1]) carries a corridor EXTENSION
+  // word — bits 15-12 extension type (0xC = corridor; foreign values are
+  // parsed opaquely, no corridor bytes), 11-10 encoding version (0 = v0
+  // absolute 4-byte triples), 9 FC fail-closed, 8 AU auto-generated, 7 DZ
+  // destination-zone = last triple, 6-4 reserved, 3-0 triple count N.
+  // Full registry rules: helpers/CorridorCheck.h.
+  bool hasCorridorExt() const {
+    return hasTransportCodes() && ((transport_codes[1] >> 12) & 0x0F) == 0x0C;
+  }
+  uint8_t getCorridorVer() const { return (uint8_t)((transport_codes[1] >> 10) & 0x03); }
+  bool hasUnknownCorridorVer() const { return hasCorridorExt() && getCorridorVer() != 0; }
+  bool isCorridorFailClosed() const { return hasCorridorExt() && (transport_codes[1] & 0x0200); }
+  bool isCorridorAuto() const       { return hasCorridorExt() && (transport_codes[1] & 0x0100); }
+  bool isCorridorDestLastTriple() const { return hasCorridorExt() && (transport_codes[1] & 0x0080); }
+  uint8_t getCorridorCount() const { return (uint8_t)(transport_codes[1] & 0x0F); }
+  // Corrupt or hostile encoding: a v0 corridor word advertises more triples
+  // than corridor[] can hold.  Every legitimate sender clamps to
+  // MAX_CORRIDOR_TRIPLES (fillCorridor, makeCorridorHeader, the companion
+  // opcode-53 handler, the Rust codec).
+  bool hasOversizedCorridor() const {
+    return hasCorridorExt() && getCorridorVer() == 0 && getCorridorCount() > MAX_CORRIDOR_TRIPLES;
+  }
+  // Corridor region size in bytes, or 0 when absent/unknown.  Non-zero only
+  // for a type-0xC v0 word, so foreign code_2 extensions never shift the
+  // payload offset.  Clamped so every consumer (parse, serialize) stays
+  // inside the fixed corridor[] buffer even if a hasOversizedCorridor()
+  // check is ever missed.
   uint8_t getCorridorByteLen() const {
-    if (!hasTransportCodes()) return 0;
+    if (!hasCorridorExt() || getCorridorVer() != 0) return 0;
     uint8_t n = getCorridorCount();
     return (n > MAX_CORRIDOR_TRIPLES) ? 0 : n * CORRIDOR_TRIPLE_BYTES;
   }

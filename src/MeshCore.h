@@ -24,9 +24,12 @@
 
 // Flood Corridor: a geo-corridor carried as a dedicated region in
 // ROUTE_TYPE_TRANSPORT_FLOOD packets (see helpers/CorridorCheck.h).
-// code_2 (transport_codes[1]) bits 15-12 hold the triple count N (0..8);
+// code_2 (transport_codes[1]) is an extension registry word: type nibble 0xC
+// announces the corridor, bits 3-0 hold the triple count N (0..8), the
+// remaining bits carry the encoding version + policy flags (FC/AU/DZ).
 // N×CORRIDOR_TRIPLE_BYTES travel in the Packet::corridor[] region, between
-// path and payload. 0 = no corridor (standard packet, full backward compat).
+// path and payload.  code_2 == 0 = no extension (standard packet, full
+// backward compat); foreign extension types are parsed opaquely.
 #define MAX_CORRIDOR_TRIPLES   8
 #define CORRIDOR_TRIPLE_BYTES  4
 

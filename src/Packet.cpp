@@ -79,8 +79,11 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len) {
   uint8_t bl = getPathByteLen();
   memcpy(path, &src[i], bl); i += bl;
 
-  // Flood Corridor region (between path and payload), only when code_2 count > 0.
-  if (hasOversizedCorridor()) return false;   // bad encoding (count > MAX_CORRIDOR_TRIPLES would overflow corridor[])
+  // Flood Corridor region (between path and payload), only for a type-0xC
+  // v0 code_2 extension word with count N > 0.  Foreign extension types and
+  // unknown versions parse NO corridor bytes (code_2 stays opaque).
+  if (hasUnknownCorridorVer()) return false;   // future encoding — payload offset not determinable
+  if (hasOversizedCorridor()) return false;    // count > MAX_CORRIDOR_TRIPLES would overflow corridor[]
   uint8_t clen = getCorridorByteLen();
   if (clen) {
     if (i + clen > len) return false;   // bad encoding

@@ -178,8 +178,14 @@ bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
   memcpy(pkt->path, &raw[i], path_byte_len); i += path_byte_len;
 
   // Flood Corridor: a dedicated region between path and payload, present when
-  // code_2 carries a triple count N > 0. Old/corridor-unaware senders always
-  // set code_2 = 0 → no region → payload is the remainder (unchanged behavior).
+  // code_2 carries the corridor extension (type 0xC, v0) with count N > 0.
+  // Corridor-unaware senders set code_2 = 0 → no region → payload is the
+  // remainder (unchanged behavior).  Foreign extension types parse no region
+  // (code_2 opaque); an unknown corridor version cannot be skipped safely.
+  if (pkt->hasUnknownCorridorVer()) {   // future corridor encoding — payload offset unknown
+    MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): unknown corridor version %d, len=%d", getLogDateTime(), pkt->getCorridorVer(), len);
+    return false;
+  }
   if (pkt->hasOversizedCorridor()) {   // N > MAX_CORRIDOR_TRIPLES would overflow corridor[]
     MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): corrupt packet (corridor count %d > %d), len=%d", getLogDateTime(), pkt->getCorridorCount(), MAX_CORRIDOR_TRIPLES, len);
     return false;
