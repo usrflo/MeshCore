@@ -462,8 +462,10 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
   }
   // Flood Corridor geo-filter: forward only if this repeater's own position
   // lies inside the corridor.  Fail-open when position is unknown (0,0) so a
-  // repeater without a location set never blocks corridor delivery.
-  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD && packet->getCorridorCount() > 0) {
+  // repeater without a location set never blocks corridor delivery — unless
+  // the sender set the FC (fail-closed) flag.
+  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD && packet->hasCorridorExt()
+      && packet->getCorridorVer() == 0 && packet->getCorridorCount() > 0) {
     if (_prefs.node_lat != 0.0 || _prefs.node_lon != 0.0) {
       CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
       uint8_t n = decodePacketCorridor(packet, triples, MAX_CORRIDOR_TRIPLES);
@@ -471,6 +473,9 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
         MESH_DEBUG_PRINTLN("allowPacketForward: position outside corridor, dropping flood");
         return false;
       }
+    } else if (packet->isCorridorFailClosed()) {
+      MESH_DEBUG_PRINTLN("allowPacketForward: fail-closed corridor but position unknown, dropping flood");
+      return false;
     }
   }
   return true;
@@ -574,15 +579,16 @@ uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
 mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
   if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
     recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
-    // Flood Corridor (Model X): if no configured region matched, accept the
-    // well-known "corridor" pseudo-region so corridor-aware repeaters forward
-    // and apply the geo-filter in allowPacketForward().  Note: a configured
-    // "corridor" region matches via findMatch() above (same auto-key), which is
-    // also how OLD, corridor-unaware repeaters can be opted in to forward
-    // corridor packets verbatim (`region def corridor` + `region allowf
-    // corridor` — they cannot geo-filter, but the code_1 HMAC covers the wire
-    // view, so it matches without firmware changes).
-    if (recv_pkt_region == NULL && pkt->getCorridorCount() > 0 && matchesCorridorRegion(pkt)) {
+    // Flood Corridor (Model X): if no configured region matched, accept any
+    // packet carrying the corridor extension word so corridor-aware repeaters
+    // forward and apply the geo-filter in allowPacketForward().  Detection is
+    // by the code_2 type nibble alone — code_1 may be keyed to the pseudo-
+    // region "#corridor" or to any real "compat" region the sender named (old,
+    // corridor-unaware repeaters configured with that region then forward
+    // verbatim; they cannot geo-filter, but the code_1 HMAC covers the wire
+    // view, so it matches without firmware changes).  A configured "corridor"
+    // region still matches via findMatch() above (same auto-key).
+    if (recv_pkt_region == NULL && pkt->hasCorridorExt() && pkt->getCorridorVer() == 0) {
       recv_pkt_region = &corridor_match_region;
     }
   } else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {

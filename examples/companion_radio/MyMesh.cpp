@@ -499,8 +499,10 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
   if (!_prefs.isRepeatEn()) return false;
   // Flood Corridor geo-filter (mirrors simple_repeater): a repeating companion
   // forwards corridor floods only when its own position lies inside the corridor.
-  // Fail-open when the position is unknown (0,0).
-  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD && packet->getCorridorCount() > 0) {
+  // Fail-open when the position is unknown (0,0) — unless the sender set the
+  // FC (fail-closed) flag.
+  if (packet->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD && packet->hasCorridorExt()
+      && packet->getCorridorVer() == 0 && packet->getCorridorCount() > 0) {
     if (sensors.node_lat != 0 || sensors.node_lon != 0) {
       CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
       uint8_t n = decodePacketCorridor(packet, triples, MAX_CORRIDOR_TRIPLES);
@@ -508,6 +510,9 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
         MESH_DEBUG_PRINTLN("allowPacketForward: position outside corridor, dropping flood");
         return false;
       }
+    } else if (packet->isCorridorFailClosed()) {
+      MESH_DEBUG_PRINTLN("allowPacketForward: fail-closed corridor but position unknown, dropping flood");
+      return false;
     }
   }
   return true;
