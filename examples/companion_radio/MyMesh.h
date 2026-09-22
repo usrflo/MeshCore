@@ -116,13 +116,16 @@ protected:
   bool allowPacketForward(const mesh::Packet* packet) override;
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis);
-  void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0) override;
+  void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0,
+                       const mesh::Packet* inbound = nullptr) override;
   void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0) override;
 
   // Flood Corridor auto-scoping (see MyMesh.cpp): harvest corridor candidates
   // from the contact table, propose, and send a corridor-scoped transport flood.
   uint8_t buildCorridorProposal(float dst_lat, float dst_lon, CorridorProposal& proposal, uint8_t mode = 0);
-  void sendCorridorFlood(mesh::Packet* pkt, const CorridorProposal& proposal, uint32_t delay_millis);
+  TransportKey corridorCode1Key() const;   // compat region pref ("" = "#corridor" pseudo-region)
+  void sendCorridorFlood(mesh::Packet* pkt, const CorridorTriple* triples, uint8_t n,
+                         uint8_t flags, uint32_t delay_millis);
   bool corridorFloodLatched(const ContactInfo& recipient) const;
   void corridorFloodLatch(const ContactInfo& recipient);
 

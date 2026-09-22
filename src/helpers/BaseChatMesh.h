@@ -126,7 +126,10 @@ protected:
   virtual void onContactResponse(const ContactInfo& contact, const uint8_t* data, uint8_t len) = 0;
   virtual void handleReturnPathRetry(const ContactInfo& contact, const uint8_t* path, uint8_t path_len);
 
-  virtual void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0);
+  // 'inbound' is the request packet this reply answers (when applicable) —
+  // corridor-aware overrides may reuse its geometry for the reply scope.
+  virtual void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0,
+                               const mesh::Packet* inbound = nullptr);
   virtual void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0);
 
   // storage concepts, for sub-classes to override/implement

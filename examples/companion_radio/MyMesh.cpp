@@ -62,6 +62,8 @@
 #define CMD_SEND_CHANNEL_DATA         62
 #define CMD_SET_DEFAULT_FLOOD_SCOPE   63
 #define CMD_GET_DEFAULT_FLOOD_SCOPE   64
+#define CMD_SET_CORRIDOR_REGION       68   // Flood Corridor: compat region for code_1 ("" = "#corridor")
+#define CMD_GET_CORRIDOR_REGION       69
 #define CMD_SEND_RAW_PACKET           65
 #define CMD_RUN_CLI_COMMAND           66  // v14+
 #define CMD_PROPOSE_CORRIDOR          67   // simulator extension: propose a geo-corridor (Flood Corridor)
@@ -102,6 +104,7 @@
 #define RESP_CODE_DEFAULT_FLOOD_SCOPE 28
 #define RESP_CODE_CLI_REPLY           29  // v14+, a reply to CMD_RUN_CLI_COMMAND
 #define RESP_CODE_PROPOSE_CORRIDOR    30   // reply to CMD_PROPOSE_CORRIDOR
+#define RESP_CODE_CORRIDOR_REGION     31   // reply to CMD_GET_CORRIDOR_REGION
 
 #define MAX_CHANNEL_DATA_LENGTH       (MAX_FRAME_SIZE - 9)
 
@@ -577,21 +580,48 @@ uint8_t MyMesh::buildCorridorProposal(float dst_lat, float dst_lon, CorridorProp
   return proposal.count;
 }
 
-// Attach the proposal as the packet's corridor region and send it as a
-// corridor-scoped transport flood (pseudo-region "corridor").
-void MyMesh::sendCorridorFlood(mesh::Packet* pkt, const CorridorProposal& proposal, uint32_t delay_millis) {
-  CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+// The transport key code_1 is computed with for corridor packets: the
+// configured corridor compat region (a real region name, e.g. "de-by" — old,
+// corridor-unaware repeaters configured with that region then forward
+// verbatim; key derivation mirrors RegionMap::getTransportKeysFor()'s
+// implicit auto-hashtag "#<name>"), or the "#corridor" pseudo-region default.
+TransportKey MyMesh::corridorCode1Key() const {
+  TransportKey key;
+  if (_prefs.corridor_region[0] != 0) {
+    char tmp[sizeof(_prefs.corridor_region) + 1];
+    tmp[0] = '#';
+    strncpy(&tmp[1], _prefs.corridor_region, sizeof(tmp) - 2);
+    tmp[sizeof(tmp) - 1] = 0;
+    SHA256 sha;
+    sha.update(tmp, strlen(tmp));
+    sha.finalize(key.key, sizeof(key.key));
+    return key;
+  }
+  return corridorPseudoKey();
+}
+
+// Attach the given triples as the packet's corridor region (with the
+// CORRIDOR_FLAG_* policy flags) and send it as a corridor-scoped transport
+// flood, code_1 keyed to the compat region or "#corridor".
+void MyMesh::sendCorridorFlood(mesh::Packet* pkt, const CorridorTriple* triples, uint8_t n,
+                               uint8_t flags, uint32_t delay_millis) {
+  fillCorridor(pkt, triples, n, flags);
+  uint16_t codes[2];
+  codes[0] = corridorCode1Key().calcTransportCode(pkt);
+  codes[1] = pkt->transport_codes[1];                     // extension word, set by fillCorridor
+  sendFlood(pkt, codes, delay_millis, _prefs.path_hash_mode + 1);
+}
+
+// Proposal→triple conversion for the auto-scoping generator (exact table
+// radii, so the radius codes round-trip unchanged).
+static uint8_t triplesFromProposal(const CorridorProposal& proposal, CorridorTriple* triples) {
   uint8_t n = (proposal.count > MAX_CORRIDOR_TRIPLES) ? MAX_CORRIDOR_TRIPLES : proposal.count;
   for (uint8_t t = 0; t < n; t++) {
     triples[t].lat = proposal.lats[t];
     triples[t].lon = proposal.lons[t];
     triples[t].radius_km = CORRIDOR_RADIUS_KM[proposal.radius_codes[t] & 0x0F];  // exact table value → same code back
   }
-  fillCorridor(pkt, triples, n);
-  uint16_t codes[2];
-  codes[0] = corridorPseudoKey().calcTransportCode(pkt);  // pseudo-region "corridor"
-  codes[1] = pkt->transport_codes[1];                     // count<<12, set by fillCorridor
-  sendFlood(pkt, codes, delay_millis, _prefs.path_hash_mode + 1);
+  return n;
 }
 
 bool MyMesh::corridorFloodLatched(const ContactInfo& recipient) const {
@@ -621,7 +651,8 @@ void MyMesh::corridorFloodLatch(const ContactInfo& recipient) {
   corridor_latch[slot].sent_millis = _ms->getMillis();
 }
 
-void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis) {
+void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis,
+                             const mesh::Packet* inbound) {
   // TODO: dynamic send_scope, depending on recipient and current 'home' Region
   if (send_unscoped) {
     sendFlood(pkt, delay_millis, _prefs.path_hash_mode + 1);  // app has explicitly requested un-scoped
@@ -631,22 +662,46 @@ void MyMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, ui
   memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
   const TransportKey* scope = send_scope.isNull() ? &default_scope : &send_scope;
 
-  // Flood Corridor auto-scoping: with no explicit scope configured, a contact
-  // flood without a known direct path is scoped, on its first attempt, by an
-  // auto-generated corridor toward the recipient's advertised position (DMs,
-  // logins, status/anon/binary requests, CLI data, ACK/PATH returns — every
-  // contact-addressed flood routes through here).  Delivery failure cannot be
-  // observed on-node, so retries within CORRIDOR_FLOOD_LATCH_MS fall back to
-  // the plain flood below ("ab dem 2. Versuch normaler Flood").
+  // Flood Corridor scoping: with no explicit scope configured, a contact
+  // flood without a known direct path is corridor-scoped on its first
+  // attempt (DMs, logins, status/anon/binary requests, CLI data, ACK/PATH
+  // returns — every contact-addressed flood routes through here).  Delivery
+  // failure cannot be observed on-node, so retries within
+  // CORRIDOR_FLOOD_LATCH_MS fall back to the plain flood below ("ab dem 2.
+  // Versuch normaler Flood").
   if (scope->isNull()
       && recipient.out_path_len == OUT_PATH_UNKNOWN
-      && (recipient.gps_lat != 0 || recipient.gps_lon != 0)
       && !corridorFloodLatched(recipient)) {
-    CorridorProposal proposal;
-    if (buildCorridorProposal(recipient.gps_lat / 1000000.0f, recipient.gps_lon / 1000000.0f, proposal) > 0) {
-      corridorFloodLatch(recipient);
-      sendCorridorFlood(pkt, proposal, delay_millis);
-      return;
+    // 1) Reply REVERSAL: this reply answers a request that arrived through a
+    //    corridor — ride the same geometry back, triple order inverted, so the
+    //    destination zone (DZ=1) lands on the original sender's end.  Needs
+    //    neither the recipient's GPS nor any config, and the inbound corridor
+    //    demonstrably carried traffic.
+    if (inbound != nullptr && inbound->hasCorridorExt() && inbound->getCorridorVer() == 0
+        && inbound->getCorridorCount() > 0) {
+      CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+      uint8_t n = decodePacketCorridor(inbound, triples, MAX_CORRIDOR_TRIPLES);
+      if (n > 0) {
+        reverseCorridor(triples, n);
+        corridorFloodLatch(recipient);
+        sendCorridorFlood(pkt, triples, n, CORRIDOR_FLAG_AU | CORRIDOR_FLAG_DZ, delay_millis);
+        return;
+      }
+    }
+    // 2) Auto-generated corridor toward the recipient's advertised position.
+    if (recipient.gps_lat != 0 || recipient.gps_lon != 0) {
+      CorridorProposal proposal;
+      if (buildCorridorProposal(recipient.gps_lat / 1000000.0f, recipient.gps_lon / 1000000.0f, proposal) > 0) {
+        CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
+        uint8_t n = triplesFromProposal(proposal, triples);
+        if (n > 0) {
+          corridorFloodLatch(recipient);
+          // AU = fw-generated; DZ = last triple (recipient's circle) is the
+          // destination zone — suppression may only reduce the transport section.
+          sendCorridorFlood(pkt, triples, n, CORRIDOR_FLAG_AU | CORRIDOR_FLAG_DZ, delay_millis);
+          return;
+        }
+      }
     }
   }
   sendFloodScoped(*scope, pkt, delay_millis);
@@ -671,11 +726,9 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
     circle.lat = (float)sensors.node_lat;
     circle.lon = (float)sensors.node_lon;
     circle.radius_km = CORRIDOR_RADIUS_KM[CORRIDOR_CHANNEL_RADIUS_CODE];  // exact table value → code 8 back
-    fillCorridor(pkt, &circle, 1);
-    uint16_t codes[2];
-    codes[0] = corridorPseudoKey().calcTransportCode(pkt);  // pseudo-region "corridor"
-    codes[1] = pkt->transport_codes[1];                     // 1<<12, set by fillCorridor
-    sendFlood(pkt, codes, delay_millis, _prefs.path_hash_mode + 1);
+    // AU = fw-generated default; DZ = 0: the whole circle (N=1) is the
+    // destination zone, matching a plain region-scoped channel flood.
+    sendCorridorFlood(pkt, &circle, 1, CORRIDOR_FLAG_AU, delay_millis);
     return;
   }
   sendFloodScoped(*scope, pkt, delay_millis);
@@ -1336,7 +1389,9 @@ void MyMesh::handleCmdFrame(size_t len) {
       }
     }
   } else if (cmd_frame[0] == CMD_SEND_CHANNEL_TXT_MSG_CORRIDOR) { // send GroupChannel text msg with geo-corridor (Flood Corridor)
-    // App→firmware wire: [op][txt_type][ch_idx][timestamp(4)][text][triple0(4)..tripleN-1(4)][count N(1)]
+    // App→firmware wire: [op][txt_type][ch_idx][timestamp(4)][text][triple0(4)..tripleN-1(4)][count N(1)][flags(1)]
+    // flags: CORRIDOR_FLAG_FC / CORRIDOR_FLAG_DZ selectable per message
+    //        (AU is fw-reserved — a manual corridor is never "auto-generated").
     int i = 1;
     uint8_t txt_type = cmd_frame[i++];
     uint8_t channel_idx = cmd_frame[i++];
@@ -1344,9 +1399,10 @@ void MyMesh::handleCmdFrame(size_t len) {
     memcpy(&msg_timestamp, &cmd_frame[i], 4);
     i += 4;
     if ((int)len <= i) { writeErrFrame(ERR_CODE_ILLEGAL_ARG); return; }
-    uint8_t n_triples = cmd_frame[len - 1];
+    uint8_t n_triples = cmd_frame[len - 2];
+    uint8_t flags = cmd_frame[len - 1] & (CORRIDOR_FLAG_FC | CORRIDOR_FLAG_DZ);
     if (n_triples > MAX_CORRIDOR_TRIPLES) { writeErrFrame(ERR_CODE_ILLEGAL_ARG); return; }
-    int trailer_len = 1 + (int)n_triples * CORRIDOR_TRIPLE_BYTES;
+    int trailer_len = 2 + (int)n_triples * CORRIDOR_TRIPLE_BYTES;
     int text_len = (int)len - i - trailer_len;
     if (text_len < 0 || txt_type != TXT_TYPE_PLAIN) { writeErrFrame(ERR_CODE_UNSUPPORTED_CMD); return; }
 
@@ -1376,7 +1432,8 @@ void MyMesh::handleCmdFrame(size_t len) {
     mesh::Packet *pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel.channel, temp, 5 + prefix_len + copy_len);
     if (pkt == NULL) { writeErrFrame(ERR_CODE_NOT_FOUND); return; }
 
-    // Decode triples, attach as the corridor region, and scope to the "corridor" pseudo-region.
+    // Decode triples, attach as the corridor region with the requested policy
+    // flags, and scope via the compat region (default "#corridor").
     CorridorTriple triples[MAX_CORRIDOR_TRIPLES];
     const uint8_t *triple_data = &cmd_frame[i + text_len];
     for (int t = 0; t < n_triples; t++) {
@@ -1384,11 +1441,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       memcpy(&word, triple_data + t * CORRIDOR_TRIPLE_BYTES, 4);
       decodeCorridorTriple(word, triples[t]);
     }
-    fillCorridor(pkt, triples, n_triples);
-    uint16_t codes[2];
-    codes[0] = corridorPseudoKey().calcTransportCode(pkt);  // pseudo-region "corridor"
-    codes[1] = pkt->transport_codes[1];                      // count<<12, set by fillCorridor
-    sendFlood(pkt, codes, 0, _prefs.path_hash_mode + 1);
+    sendCorridorFlood(pkt, triples, n_triples, flags, 0);
     writeOKFrame();
   } else if (cmd_frame[0] == CMD_PROPOSE_CORRIDOR) { // ask firmware to propose a geo-corridor (Flood Corridor)
     // App→firmware wire: [op][lat(4)][lon(4)][mode(1, optional)]
@@ -2240,6 +2293,31 @@ void MyMesh::handleCmdFrame(size_t len) {
     } else {
       _serial->writeFrame(out_frame, 1);   // no name or key means null
     }
+  } else if (cmd_frame[0] == CMD_SET_CORRIDOR_REGION && len >= 1) {
+    // App→firmware wire: [op][region name (≤31 chars, no '#')]; empty payload clears back to "#corridor"
+    if (len >= 2) {
+      int n = strnlen((char *) &cmd_frame[1], len - 1);
+      if (n > 0 && n < (int)sizeof(_prefs.corridor_region)) {
+        memset(_prefs.corridor_region, 0, sizeof(_prefs.corridor_region));
+        memcpy(_prefs.corridor_region, &cmd_frame[1], n);
+        savePrefs();
+        writeOKFrame();
+      } else {
+        writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+      }
+    } else {
+      _prefs.corridor_region[0] = 0;   // clear: code_1 back to the "#corridor" pseudo-region
+      savePrefs();
+      writeOKFrame();
+    }
+  } else if (cmd_frame[0] == CMD_GET_CORRIDOR_REGION) {
+    // Reply: [RESP_CODE_CORRIDOR_REGION][region name ≤31, NUL-padded]; empty name = "#corridor"
+    out_frame[0] = RESP_CODE_CORRIDOR_REGION;
+    memset(&out_frame[1], 0, 31);
+    int n = strlen(_prefs.corridor_region);
+    if (n > 31) n = 31;
+    memcpy(&out_frame[1], _prefs.corridor_region, n);
+    _serial->writeFrame(out_frame, 1+31);
   } else if (cmd_frame[0] == CMD_SEND_CONTROL_DATA && len >= 2 && (cmd_frame[1] & 0x80) != 0) {
     auto resp = createControlData(&cmd_frame[1], len - 1);
     if (resp) {

@@ -11,7 +11,8 @@
 
 #define CLI_REPLY_DELAY_MILLIS      600
 
-void BaseChatMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis) {
+void BaseChatMesh::sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis,
+                                   const mesh::Packet* inbound) {
   sendFlood(pkt, delay_millis);
 }
 void BaseChatMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis) {
@@ -251,7 +252,7 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the ACK
         mesh::Packet* path = createPathReturn(from.id, secret, packet->path, packet->path_len,
                                                 PAYLOAD_TYPE_ACK, (uint8_t *) &ack_hash, 6);
-        if (path) sendFloodScoped(from, path, TXT_ACK_DELAY);
+        if (path) sendFloodScoped(from, path, TXT_ACK_DELAY, packet);
       } else {
         sendAckTo(from, ack_hash, 6);
       }
@@ -281,7 +282,7 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
         auto reply_pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, from.id, secret, temp, 5 + text_len);
         if (reply_pkt) {
           if (from.out_path_len == OUT_PATH_UNKNOWN) {
-            sendFloodScoped(from, reply_pkt, CLI_REPLY_DELAY_MILLIS);
+            sendFloodScoped(from, reply_pkt, CLI_REPLY_DELAY_MILLIS, packet);
           } else {
             sendDirect(reply_pkt, from.out_path, from.out_path_len, CLI_REPLY_DELAY_MILLIS);
           }
@@ -301,7 +302,7 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the ACK
         mesh::Packet* path = createPathReturn(from.id, secret, packet->path, packet->path_len,
                                                 PAYLOAD_TYPE_ACK, (uint8_t *) &ack_hash, 4);
-        if (path) sendFloodScoped(from, path, TXT_ACK_DELAY);
+        if (path) sendFloodScoped(from, path, TXT_ACK_DELAY, packet);
       } else {
         sendAckTo(from, (uint8_t *) &ack_hash);
       }
@@ -317,14 +318,14 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the response
         mesh::Packet* path = createPathReturn(from.id, secret, packet->path, packet->path_len,
                                               PAYLOAD_TYPE_RESPONSE, temp_buf, reply_len);
-        if (path) sendFloodScoped(from, path, SERVER_RESPONSE_DELAY);
+        if (path) sendFloodScoped(from, path, SERVER_RESPONSE_DELAY, packet);
       } else {
         mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, from.id, secret, temp_buf, reply_len);
         if (reply) {
           if (from.out_path_len != OUT_PATH_UNKNOWN) {  // we have an out_path, so send DIRECT
             sendDirect(reply, from.out_path, from.out_path_len, SERVER_RESPONSE_DELAY);
           } else {
-            sendFloodScoped(from, reply, SERVER_RESPONSE_DELAY);
+            sendFloodScoped(from, reply, SERVER_RESPONSE_DELAY, packet);
           }
         }
       }
